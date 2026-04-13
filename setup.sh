@@ -16,8 +16,8 @@ if [[ "$(id -u)" -ne 0 ]]; then
   exit 1
 fi
 
-if ! command -v python3.11 &>/dev/null; then
-  echo "ERROR: python3.11 not found. Install it with: apt install python3.11 python3.11-venv" >&2
+if ! command -v python3.13 &>/dev/null; then
+  echo "ERROR: python3.13 not found. Install it with: apt install python3.13 python3.13-venv" >&2
   exit 1
 fi
 
@@ -32,15 +32,15 @@ apt-get install -y --no-install-recommends \
   mdadm \
   lvm2 \
   parted \
-  python3.11-venv \
-  python3.11-dev
+  python3.13-venv \
+  python3.13-dev
 
 # ---------------------------------------------------------------------------
 # Python virtual environment
 # ---------------------------------------------------------------------------
 
 echo "==> Creating Python venv at $VENV_DIR..."
-python3.11 -m venv "$VENV_DIR"
+python3.13 -m venv "$VENV_DIR"
 "$VENV_DIR/bin/pip" install --upgrade pip --quiet
 "$VENV_DIR/bin/pip" install -r "$TRAID_DIR/requirements.txt" --quiet
 echo "    Python dependencies installed."
