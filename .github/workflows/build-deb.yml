@@ -19,6 +19,7 @@ jobs:
         run: |
           apt-get update -qq
           apt-get install -y --no-install-recommends \
+            build-essential \
             git ca-certificates \
             dpkg-dev debhelper \
             python3.13 python3.13-venv python3-pip \
