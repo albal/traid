@@ -251,6 +251,25 @@
                  :style="`width: ${disk.available ? 0 : 100}%`"></div>
           </div>
           <div class="mt-1 text-xs text-gray-500" x-text="disk.fstype || disk.mountpoint || '—'"></div>
+          <!-- Actions for free disks -->
+          <div x-show="disk.available" class="mt-2 grid grid-cols-2 gap-1">
+            <button @click.stop="openDiskAction('smart_short', disk.name)"
+                    class="text-xs px-1 py-0.5 rounded bg-gray-700 hover:bg-blue-800 text-gray-400 hover:text-white transition-colors">
+              SMART Short
+            </button>
+            <button @click.stop="openDiskAction('smart_long', disk.name)"
+                    class="text-xs px-1 py-0.5 rounded bg-gray-700 hover:bg-blue-800 text-gray-400 hover:text-white transition-colors">
+              SMART Long
+            </button>
+            <button @click.stop="openDiskAction('badblocks', disk.name)"
+                    class="text-xs px-1 py-0.5 rounded bg-gray-700 hover:bg-yellow-900 text-gray-400 hover:text-yellow-300 transition-colors">
+              Badblocks
+            </button>
+            <button @click.stop="openDiskAction('erase', disk.name)"
+                    class="text-xs px-1 py-0.5 rounded bg-gray-700 hover:bg-red-900 text-gray-400 hover:text-red-400 transition-colors">
+              Erase
+            </button>
+          </div>
         </div>
       </template>
       <div x-show="allDisks.length === 0 && !loadingDisks"
@@ -295,12 +314,49 @@
                           class="text-xs px-2 py-0.5 rounded bg-gray-700 hover:bg-gray-600 transition-colors">✕</button>
                 </form>
               </div>
-              <div class="flex items-center gap-2 shrink-0">
+              <div class="flex items-center gap-2 shrink-0" x-data="{ menuOpen: false }">
                 <span class="text-xs text-gray-400" x-text="humanSize(parseFloat(vg.vg_size) || 0)"></span>
-                <button @click="confirmDelete(vg.vg_name)"
-                        class="text-xs px-2 py-0.5 rounded bg-red-900/50 hover:bg-red-800 text-red-400 hover:text-red-300 border border-red-800 transition-colors">
-                  Delete
-                </button>
+                <!-- Context menu -->
+                <div class="relative">
+                  <button @click="menuOpen = !menuOpen"
+                          class="text-xs px-2 py-0.5 rounded bg-gray-700 hover:bg-gray-600 text-gray-300 transition-colors select-none">
+                    &#8942;
+                  </button>
+                  <div x-show="menuOpen"
+                       @click.outside="menuOpen = false"
+                       x-transition
+                       class="absolute right-0 mt-1 w-48 bg-gray-900 border border-gray-700 rounded-lg shadow-xl z-30 py-1 text-xs">
+                    <button @click="openVgAction('migrate', vg.vg_name); menuOpen = false"
+                            class="w-full text-left px-3 py-1.5 hover:bg-gray-700 text-gray-300">
+                      Migrate TRAID-1 &#8596; 2
+                    </button>
+                    <button @click="openVgAction('replace', vg.vg_name); menuOpen = false"
+                            class="w-full text-left px-3 py-1.5 hover:bg-gray-700 text-gray-300">
+                      Replace Disk
+                    </button>
+                    <button @click="openVgAction('grow', vg.vg_name); menuOpen = false"
+                            class="w-full text-left px-3 py-1.5 hover:bg-gray-700 text-gray-300">
+                      Grow Array
+                    </button>
+                    <button @click="openVgAction('shrink', vg.vg_name); menuOpen = false"
+                            class="w-full text-left px-3 py-1.5 hover:bg-gray-700 text-gray-300">
+                      Shrink Array
+                    </button>
+                    <button @click="openVgAction('clone', vg.vg_name); menuOpen = false"
+                            class="w-full text-left px-3 py-1.5 hover:bg-gray-700 text-gray-300">
+                      Clone to Disk
+                    </button>
+                    <button @click="openVgAction('backup', vg.vg_name); menuOpen = false"
+                            class="w-full text-left px-3 py-1.5 hover:bg-gray-700 text-gray-300">
+                      Backup to Network
+                    </button>
+                    <div class="my-1 border-t border-gray-700"></div>
+                    <button @click="confirmDelete(vg.vg_name); menuOpen = false"
+                            class="w-full text-left px-3 py-1.5 hover:bg-red-900/60 text-red-400">
+                      Delete
+                    </button>
+                  </div>
+                </div>
               </div>
             </div>
 
@@ -373,6 +429,218 @@
 </div>
 
 <!-- =========================================================
+     OPERATION MODAL
+========================================================= -->
+<div x-show="activeModal"
+     x-transition:enter="transition ease-out duration-150"
+     x-transition:enter-start="opacity-0"
+     x-transition:enter-end="opacity-100"
+     x-transition:leave="transition ease-in duration-100"
+     x-transition:leave-start="opacity-100"
+     x-transition:leave-end="opacity-0"
+     class="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4">
+  <div @click.stop
+       class="bg-gray-800 border border-gray-700 rounded-xl shadow-2xl w-full max-w-md p-6">
+
+    <!-- Title -->
+    <h2 class="text-base font-semibold text-gray-100 mb-4">
+      <span x-show="activeModal === 'migrate'">Migrate Array</span>
+      <span x-show="activeModal === 'replace'">Replace Disk</span>
+      <span x-show="activeModal === 'grow'">Grow Array</span>
+      <span x-show="activeModal === 'shrink'">Shrink Array</span>
+      <span x-show="activeModal === 'clone'">Clone Volume to Disk</span>
+      <span x-show="activeModal === 'backup'">Backup to Network</span>
+      <span x-show="activeModal === 'smart_short'">SMART Short Test</span>
+      <span x-show="activeModal === 'smart_long'">SMART Long Test</span>
+      <span x-show="activeModal === 'badblocks'">Badblocks Test</span>
+      <span x-show="activeModal === 'erase'">Erase Disk</span>
+    </h2>
+
+    <!-- Target label -->
+    <div class="text-xs text-gray-400 mb-4">
+      <span x-show="mo.vg_name">Volume: <span class="text-white font-mono" x-text="mo.vg_name"></span></span>
+      <span x-show="mo.disk">Disk: <span class="text-white font-mono" x-text="mo.disk"></span></span>
+    </div>
+
+    <!-- Migrate fields -->
+    <div x-show="activeModal === 'migrate'" class="space-y-3 mb-5">
+      <div>
+        <label class="text-xs text-gray-400 block mb-1">Direction</label>
+        <select x-model="mo.direction"
+                class="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-sm text-gray-200">
+          <option value="traid1_to_traid2">TRAID-1 → TRAID-2 (add redundancy)</option>
+          <option value="traid2_to_traid1">TRAID-2 → TRAID-1 (free a disk)</option>
+        </select>
+      </div>
+      <div x-show="mo.direction === 'traid1_to_traid2'">
+        <label class="text-xs text-gray-400 block mb-1">New disk to add (optional)</label>
+        <input x-model="mo.new_disk" placeholder="/dev/sdb"
+               class="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-sm text-gray-200 focus:outline-none focus:border-blue-400" />
+        <div class="text-xs text-gray-600 mt-1">Leave blank if TRAID-2 can use existing spares.</div>
+      </div>
+    </div>
+
+    <!-- Replace fields -->
+    <div x-show="activeModal === 'replace'" class="space-y-3 mb-5">
+      <div>
+        <label class="text-xs text-gray-400 block mb-1">Old disk (to remove)</label>
+        <input x-model="mo.old_disk" placeholder="/dev/sdb"
+               class="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-sm text-gray-200 focus:outline-none focus:border-blue-400" />
+      </div>
+      <div>
+        <label class="text-xs text-gray-400 block mb-1">New disk (replacement)</label>
+        <input x-model="mo.new_disk" placeholder="/dev/sdc"
+               class="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-sm text-gray-200 focus:outline-none focus:border-blue-400" />
+      </div>
+    </div>
+
+    <!-- Grow fields -->
+    <div x-show="activeModal === 'grow'" class="space-y-3 mb-5">
+      <div>
+        <label class="text-xs text-gray-400 block mb-1">New disk to add</label>
+        <input x-model="mo.new_disk" placeholder="/dev/sdb"
+               class="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-sm text-gray-200 focus:outline-none focus:border-blue-400" />
+      </div>
+    </div>
+
+    <!-- Shrink fields -->
+    <div x-show="activeModal === 'shrink'" class="space-y-3 mb-5">
+      <div>
+        <label class="text-xs text-gray-400 block mb-1">Disk to remove</label>
+        <input x-model="mo.disk_to_remove" placeholder="/dev/sdb"
+               class="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-sm text-gray-200 focus:outline-none focus:border-blue-400" />
+        <div class="text-xs text-gray-600 mt-1">The disk will be removed from all arrays and wiped.</div>
+      </div>
+    </div>
+
+    <!-- Clone fields -->
+    <div x-show="activeModal === 'clone'" class="space-y-3 mb-5">
+      <div>
+        <label class="text-xs text-gray-400 block mb-1">Target disk (must be ≥ volume size)</label>
+        <input x-model="mo.target_disk" placeholder="/dev/sdb"
+               class="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-sm text-gray-200 focus:outline-none focus:border-blue-400" />
+        <div class="text-xs text-yellow-600 mt-1">This will overwrite all data on the target disk.</div>
+      </div>
+    </div>
+
+    <!-- Backup fields -->
+    <div x-show="activeModal === 'backup'" class="space-y-3 mb-5">
+      <div>
+        <label class="text-xs text-gray-400 block mb-1">Protocol</label>
+        <select x-model="mo.protocol"
+                class="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-sm text-gray-200">
+          <option value="nfs">NFS</option>
+          <option value="cifs">CIFS / Samba</option>
+        </select>
+      </div>
+      <div>
+        <label class="text-xs text-gray-400 block mb-1">Host (IP or hostname)</label>
+        <input x-model="mo.host" placeholder="192.168.1.10"
+               class="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-sm text-gray-200 focus:outline-none focus:border-blue-400" />
+      </div>
+      <div>
+        <label class="text-xs text-gray-400 block mb-1">
+          <span x-show="mo.protocol === 'nfs'">Remote path (host:/path)</span>
+          <span x-show="mo.protocol === 'cifs'">Share (//host/share or host/share)</span>
+        </label>
+        <input x-model="mo.remote_path"
+               :placeholder="mo.protocol === 'nfs' ? '192.168.1.10:/backup' : '//192.168.1.10/backup'"
+               class="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-sm text-gray-200 focus:outline-none focus:border-blue-400" />
+      </div>
+      <div x-show="mo.protocol === 'cifs'" class="grid grid-cols-2 gap-3">
+        <div>
+          <label class="text-xs text-gray-400 block mb-1">Username</label>
+          <input x-model="mo.cifs_user" placeholder="user"
+                 class="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-sm text-gray-200 focus:outline-none focus:border-blue-400" />
+        </div>
+        <div>
+          <label class="text-xs text-gray-400 block mb-1">Password</label>
+          <input x-model="mo.cifs_pass" type="password" placeholder="••••••"
+                 class="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-sm text-gray-200 focus:outline-none focus:border-blue-400" />
+        </div>
+      </div>
+    </div>
+
+    <!-- Disk action confirmations (smart/badblocks/erase) — no extra fields needed -->
+    <div x-show="activeModal === 'smart_short' || activeModal === 'smart_long'" class="mb-5">
+      <p class="text-sm text-gray-400">Run a
+        <span x-show="activeModal === 'smart_short'" class="text-white">short</span>
+        <span x-show="activeModal === 'smart_long'" class="text-white">long</span>
+        SMART self-test on <span class="font-mono text-white" x-text="mo.disk"></span>.
+        A report will be saved and linked in the task panel when complete.
+      </p>
+    </div>
+    <div x-show="activeModal === 'badblocks'" class="mb-5">
+      <div class="bg-yellow-900/40 border border-yellow-700 rounded-lg p-3 text-sm text-yellow-200">
+        <strong>Warning:</strong> Badblocks write test will overwrite all data on
+        <span class="font-mono" x-text="mo.disk"></span>. Disk must be unallocated.
+      </div>
+    </div>
+    <div x-show="activeModal === 'erase'" class="mb-5 space-y-3">
+      <div>
+        <label class="text-xs text-gray-400 block mb-1">Erase method</label>
+        <div class="space-y-2">
+          <label class="flex items-start gap-3 p-2.5 rounded-lg border cursor-pointer transition-colors"
+                 :class="mo.erase_mode === 'quick' ? 'border-blue-500 bg-blue-900/20' : 'border-gray-600 hover:border-gray-500'">
+            <input type="radio" x-model="mo.erase_mode" value="quick" class="mt-0.5 accent-blue-500" />
+            <div>
+              <div class="text-sm text-gray-200 font-medium">Quick Erase</div>
+              <div class="text-xs text-gray-500">Single pass of zeros. Fast, suitable for reuse in a trusted environment.</div>
+            </div>
+          </label>
+          <label class="flex items-start gap-3 p-2.5 rounded-lg border cursor-pointer transition-colors"
+                 :class="mo.erase_mode === 'dod_short' ? 'border-blue-500 bg-blue-900/20' : 'border-gray-600 hover:border-gray-500'">
+            <input type="radio" x-model="mo.erase_mode" value="dod_short" class="mt-0.5 accent-blue-500" />
+            <div>
+              <div class="text-sm text-gray-200 font-medium">DoD Short</div>
+              <div class="text-xs text-gray-500">3 passes using a DoD-derived algorithm. Suitable for most data destruction requirements.</div>
+            </div>
+          </label>
+          <label class="flex items-start gap-3 p-2.5 rounded-lg border cursor-pointer transition-colors"
+                 :class="mo.erase_mode === 'dod_7' ? 'border-blue-500 bg-blue-900/20' : 'border-gray-600 hover:border-gray-500'">
+            <input type="radio" x-model="mo.erase_mode" value="dod_7" class="mt-0.5 accent-blue-500" />
+            <div>
+              <div class="text-sm text-gray-200 font-medium">DoD 5220.22-M</div>
+              <div class="text-xs text-gray-500">7 passes + final zero. Most thorough — suitable for disposal or recycling of sensitive media.</div>
+            </div>
+          </label>
+        </div>
+      </div>
+      <div class="bg-red-950/40 border border-red-800 rounded-lg p-3 text-sm text-red-300">
+        <strong>Warning:</strong> All data on <span class="font-mono" x-text="mo.disk"></span> will be irrecoverably destroyed. This cannot be undone.
+      </div>
+    </div>
+
+    <!-- Buttons -->
+    <div class="flex gap-3 justify-end">
+      <button @click="closeModal()"
+              :disabled="modalBusy"
+              class="px-4 py-2 rounded bg-gray-700 hover:bg-gray-600 disabled:opacity-40 text-sm transition-colors">
+        Cancel
+      </button>
+      <button @click="submitModal()"
+              :disabled="modalBusy"
+              :class="(activeModal === 'erase' || activeModal === 'badblocks' || activeModal === 'shrink')
+                ? 'bg-red-700 hover:bg-red-600' : 'bg-blue-600 hover:bg-blue-500'"
+              class="px-4 py-2 rounded disabled:opacity-40 text-sm transition-colors">
+        <span x-show="!modalBusy">
+          <span x-show="activeModal === 'migrate'">Start Migration</span>
+          <span x-show="activeModal === 'replace'">Start Replace</span>
+          <span x-show="activeModal === 'grow'">Grow Array</span>
+          <span x-show="activeModal === 'shrink'">Shrink Array</span>
+          <span x-show="activeModal === 'clone'">Start Clone</span>
+          <span x-show="activeModal === 'backup'">Start Backup</span>
+          <span x-show="activeModal === 'smart_short' || activeModal === 'smart_long'">Run SMART Test</span>
+          <span x-show="activeModal === 'badblocks'">Start Badblocks</span>
+          <span x-show="activeModal === 'erase'">Erase Disk</span>
+        </span>
+        <span x-show="modalBusy">Starting...</span>
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- =========================================================
      TASK MONITOR PANEL (slide-in from right)
 ========================================================= -->
 <div x-show="showMonitor"
@@ -412,7 +680,14 @@
             </div>
             <div class="text-xs text-gray-500 ml-4" x-text="job.step"></div>
           </div>
-          <!-- Delete button (only for finished jobs) -->
+          <!-- Cancel button (running disk-only jobs) -->
+          <button x-show="(job.status === 'running' || job.status === 'accepted') &&
+                          ['disk_erase','smart_test','badblocks_test'].includes(job.type)"
+                  @click="cancelJob(job.job_id)"
+                  class="text-xs px-1.5 py-0.5 rounded bg-red-900/50 hover:bg-red-800 text-red-400 hover:text-red-300 border border-red-800 transition-colors ml-2 shrink-0">
+            Cancel
+          </button>
+          <!-- Dismiss button (finished jobs) -->
           <button x-show="job.status !== 'running' && job.status !== 'accepted'"
                   @click="deleteJob(job.job_id)"
                   class="text-gray-600 hover:text-gray-300 text-sm leading-none ml-2 shrink-0">✕</button>
@@ -442,6 +717,26 @@
 
         <!-- Error message -->
         <div x-show="job.error" class="ml-4 text-xs text-red-400 mt-1 break-words" x-text="job.error"></div>
+
+        <!-- Progress bar (running jobs with known progress) -->
+        <div x-show="job.status === 'running' && job.progress_pct != null" class="ml-4 mt-2">
+          <div class="flex justify-between text-xs text-gray-500 mb-1">
+            <span x-text="job.step || 'Working...'"></span>
+            <span x-text="(job.progress_pct ?? 0).toFixed(0) + '%'"></span>
+          </div>
+          <div class="h-1.5 bg-gray-600 rounded-full overflow-hidden">
+            <div class="h-full bg-blue-500 rounded-full transition-all duration-300"
+                 :style="`width: ${job.progress_pct ?? 0}%`"></div>
+          </div>
+        </div>
+
+        <!-- Report links (only once job completed successfully) -->
+        <div x-show="job.report_url && job.status === 'complete'" class="ml-4 mt-1 flex items-center gap-3">
+          <a :href="job.report_url" target="_blank" rel="noopener"
+             class="text-xs text-blue-400 hover:text-blue-300 underline">View Report</a>
+          <a :href="job.report_url + '?download=true'" download
+             class="text-xs text-gray-500 hover:text-gray-300 underline">Download</a>
+        </div>
 
         <!-- Timestamps + Duration -->
         <div class="ml-4 mt-1 flex flex-wrap gap-x-3 gap-y-0.5 text-xs text-gray-600">
@@ -513,6 +808,11 @@ function traidApp() {
 
     // Errors
     errorMsg: '',
+
+    // Operation modal
+    activeModal: null,
+    mo: {},
+    modalBusy: false,
 
     // Computed
     get availableDisks() {
@@ -587,6 +887,15 @@ function traidApp() {
       try {
         await fetch(`/api/jobs/${encodeURIComponent(jobId)}`, { method: 'DELETE' })
         await this.loadJobs()
+      } catch (_) {}
+    },
+
+    async cancelJob(jobId) {
+      try {
+        await fetch(`/api/jobs/${encodeURIComponent(jobId)}`, { method: 'DELETE' })
+        // Poll quickly to pick up the cancelled status
+        setTimeout(() => this.loadJobs(), 500)
+        setTimeout(() => this.loadJobs(), 1500)
       } catch (_) {}
     },
 
@@ -716,6 +1025,8 @@ function traidApp() {
           throw new Error(err.detail?.message || err.detail || `HTTP ${res.status}`)
         }
         this.deleteTarget = null
+        this.showMonitor = true
+        await this.loadJobs()
         await this.loadDisks()
         await this.loadVolumes()
       } catch (e) {
@@ -749,6 +1060,87 @@ function traidApp() {
       if (!ts) return ''
       const d = new Date(ts * 1000)
       return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+    },
+
+    openVgAction(type, vgName) {
+      this.mo = { vg_name: vgName, direction: 'traid1_to_traid2', protocol: 'nfs',
+                  new_disk: '', old_disk: '', disk_to_remove: '', target_disk: '',
+                  host: '', remote_path: '', cifs_user: '', cifs_pass: '' }
+      this.activeModal = type
+    },
+
+    openDiskAction(type, diskName) {
+      this.mo = { disk: diskName, erase_mode: 'dod_short' }
+      this.activeModal = type
+    },
+
+    closeModal() {
+      this.activeModal = null
+      this.mo = {}
+    },
+
+    async submitModal() {
+      this.modalBusy = true
+      try {
+        let url, body
+        const t = this.activeModal
+        if (t === 'migrate') {
+          url = `/api/volumes/${encodeURIComponent(this.mo.vg_name)}/migrate`
+          body = { direction: this.mo.direction }
+          if (this.mo.direction === 'traid1_to_traid2' && this.mo.new_disk)
+            body.new_disk = this.mo.new_disk
+        } else if (t === 'replace') {
+          url = `/api/volumes/${encodeURIComponent(this.mo.vg_name)}/replace`
+          body = { old_disk: this.mo.old_disk, new_disk: this.mo.new_disk }
+        } else if (t === 'grow') {
+          url = `/api/volumes/${encodeURIComponent(this.mo.vg_name)}/grow`
+          body = { new_disk: this.mo.new_disk }
+        } else if (t === 'shrink') {
+          url = `/api/volumes/${encodeURIComponent(this.mo.vg_name)}/shrink`
+          body = { disk_to_remove: this.mo.disk_to_remove }
+        } else if (t === 'clone') {
+          url = `/api/volumes/${encodeURIComponent(this.mo.vg_name)}/clone`
+          body = { target_disk: this.mo.target_disk }
+        } else if (t === 'backup') {
+          url = `/api/volumes/${encodeURIComponent(this.mo.vg_name)}/backup`
+          body = { protocol: this.mo.protocol, host: this.mo.host,
+                   remote_path: this.mo.remote_path, cifs_user: this.mo.cifs_user || '',
+                   cifs_pass: this.mo.cifs_pass || '' }
+        } else if (t === 'smart_short' || t === 'smart_long') {
+          url = '/api/disks/smart'
+          body = { disk: this.mo.disk, test_type: t === 'smart_short' ? 'short' : 'long' }
+        } else if (t === 'badblocks') {
+          url = '/api/disks/badblocks'
+          body = { disk: this.mo.disk }
+        } else if (t === 'erase') {
+          url = '/api/disks/erase'
+          body = { disk: this.mo.disk, mode: this.mo.erase_mode || 'dod_short' }
+        }
+        const res = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        })
+        if (!res.ok) {
+          const err = await res.json()
+          const msg = err.detail?.message || err.detail || `HTTP ${res.status}`
+          if (res.status === 409) {
+            this.errorMsg = 'Array is busy: ' + msg + '. Try again when the current job finishes.'
+          } else {
+            throw new Error(msg)
+          }
+        } else {
+          this.closeModal()
+          this.showMonitor = true
+          await this.loadJobs()
+          await this.loadDisks()
+          await this.loadVolumes()
+        }
+      } catch (e) {
+        this.errorMsg = 'Operation failed: ' + e.message
+      } finally {
+        this.modalBusy = false
+      }
     },
   }
 }

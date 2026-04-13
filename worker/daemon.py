@@ -14,11 +14,10 @@ Socket permissions: 0o660, group=www-data, so only the API process can write.
 import asyncio
 import json
 import logging
-import logging.config
 import os
-import shutil
 import signal
 import sys
+import time
 import uuid
 from pathlib import Path
 
@@ -28,20 +27,27 @@ from shared.protocol import send_message, recv_message, ProtocolError
 from worker.command_validator import validate_request, ValidationError
 from worker import disk_ops
 from worker.mdstat_reader import MdstatReader
-from worker.traid_algorithm import capacity_preview, calculate_traid
-from worker.traid_algorithm import generate_parted_commands, generate_mdadm_commands, generate_lvm_commands
+from worker.traid_algorithm import calculate_traid
+from worker.traid_algorithm import (
+    generate_parted_commands,
+    generate_mdadm_commands,
+    generate_lvm_commands,
+)
 
 SOCKET_PATH = Path("/run/traid.sock")
 SOCKET_GROUP = "www-data"
+REPORT_DIR = disk_ops.REPORT_DIR
 
 
 # ---------------------------------------------------------------------------
-# Logging setup
+# Logging
 # ---------------------------------------------------------------------------
 
 def _setup_logging() -> None:
     handler = logging.StreamHandler(sys.stdout)
-    handler.setFormatter(jsonlogger.JsonFormatter("%(asctime)s %(levelname)s %(name)s %(message)s"))
+    handler.setFormatter(
+        jsonlogger.JsonFormatter("%(asctime)s %(levelname)s %(name)s %(message)s")
+    )
     logging.basicConfig(level=logging.INFO, handlers=[handler])
 
 
@@ -49,16 +55,109 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# State
+# Global state
 # ---------------------------------------------------------------------------
 
 _mdstat_reader: MdstatReader = MdstatReader()
-
-# Active creation tasks: job_id -> asyncio.Task
 _active_jobs: dict[str, asyncio.Task] = {}
-
-# Job history: job_id -> metadata dict (persists until explicitly deleted)
 _job_history: dict[str, dict] = {}
+
+# One destructive operation at a time.  SMART tests bypass this lock.
+_array_lock: asyncio.Lock = asyncio.Lock()
+
+
+# ---------------------------------------------------------------------------
+# Job helpers
+# ---------------------------------------------------------------------------
+
+def _new_job(operation: str, **extra) -> str:
+    job_id = str(uuid.uuid4())
+    _job_history[job_id] = {
+        "job_id": job_id,
+        "status": "accepted",
+        "step": "queued",
+        "operation": operation,
+        "type": extra.pop("type", operation),
+        "disks": extra.pop("disks", []),
+        "vg_name": extra.pop("vg_name", None),
+        "started_at": None,
+        "finished_at": None,
+        "error": None,
+        "accepted_at": time.time(),
+        "progress_pct": 0,
+        "report_url": None,
+        **extra,
+    }
+    return job_id
+
+
+def _make_updater(job_id: str):
+    def update(step: str, pct: float = None):
+        entry = _job_history.get(job_id)
+        if entry:
+            entry["step"] = step
+            if pct is not None:
+                entry["progress_pct"] = round(min(100, max(0, pct)))
+    return update
+
+
+async def _exec_job(job_id: str, coro) -> None:
+    """Run coro, updating job history with status/timestamps/error."""
+    _job_history[job_id]["status"] = "running"
+    _job_history[job_id]["started_at"] = time.time()
+    try:
+        await coro
+        _job_history[job_id]["status"] = "complete"
+        _job_history[job_id]["step"] = "done"
+        _job_history[job_id]["progress_pct"] = 100
+    except asyncio.CancelledError:
+        _job_history[job_id]["status"] = "cancelled"
+        _job_history[job_id]["step"] = "Cancelled"
+        raise
+    except Exception as exc:
+        logger.exception("job %s failed", job_id)
+        _job_history[job_id]["status"] = "failed"
+        _job_history[job_id]["error"] = str(exc)
+    finally:
+        _job_history[job_id]["finished_at"] = time.time()
+        _active_jobs.pop(job_id, None)
+
+
+def _launch_locked(job_id: str, coro) -> bool:
+    """
+    Try to launch a job that needs _array_lock.
+    Returns False (job NOT started) if the lock is already held.
+    The lock is acquired inside the spawned task, so the caller never blocks.
+    """
+    if _array_lock.locked():
+        return False
+
+    async def _wrapper():
+        await _array_lock.acquire()
+        try:
+            await _exec_job(job_id, coro)
+        finally:
+            try:
+                _array_lock.release()
+            except RuntimeError:
+                pass
+
+    task = asyncio.create_task(_wrapper(), name=f"job-{job_id[:8]}")
+    _active_jobs[job_id] = task
+    return True
+
+
+def _launch_free(job_id: str, coro) -> None:
+    """Launch a job that does NOT need the array lock (e.g. SMART test)."""
+    task = asyncio.create_task(
+        _exec_job(job_id, coro), name=f"job-{job_id[:8]}"
+    )
+    _active_jobs[job_id] = task
+
+
+def _busy_response():
+    return {"accepted": False, "reason": "ARRAY_BUSY",
+            "message": "Another operation is in progress. Try again when the current job finishes."}
 
 
 # ---------------------------------------------------------------------------
@@ -75,8 +174,7 @@ async def _handle_disk_scan(_params: dict) -> dict:
 # ---------------------------------------------------------------------------
 
 async def _handle_array_detail(params: dict) -> dict:
-    detail = await disk_ops.get_array_detail(params["device"])
-    return detail
+    return await disk_ops.get_array_detail(params["device"])
 
 
 # ---------------------------------------------------------------------------
@@ -88,153 +186,64 @@ async def _handle_lvm_report(_params: dict) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Handler: array_create (async job)
+# Handler: array_create
 # ---------------------------------------------------------------------------
 
-async def _execute_creation(job_id: str, disks: list[str], redundancy: int, vg_name: str = "traid_vg") -> None:
-    import time
-    _job_history[job_id]["status"] = "running"
-    _job_history[job_id]["started_at"] = time.time()
-    logger.info("job %s: starting array creation for %s", job_id, disks)
+async def _execute_creation(
+    job_id: str, disks: list[str], redundancy: int, vg_name: str
+) -> None:
+    upd = _make_updater(job_id)
+    sizes = []
+    for disk in disks:
+        sizes.append(await disk_ops.get_disk_size(disk))
 
-    def _fail(reason: str) -> None:
-        _job_history[job_id]["status"] = "failed"
-        _job_history[job_id]["error"] = reason
-        _job_history[job_id]["finished_at"] = time.time()
+    md_start = await disk_ops.next_free_md_index()
+    plan = calculate_traid(sizes, redundancy=redundancy, vg_name=vg_name, md_start=md_start)
 
-    try:
-        sizes = []
-        for disk in disks:
-            rc, out, _ = await disk_ops.run_privileged(
-                "lsblk", ["--bytes", "--nodeps", "--output", "SIZE", "--noheadings", disk]
-            )
-            if rc != 0:
-                logger.error("job %s: lsblk failed for %s", job_id, disk)
-                _fail(f"lsblk failed for {disk}")
-                return
-            sizes.append(int(out.strip()))
-
-        md_start = await disk_ops.next_free_md_index()
-        logger.info("job %s: using md devices starting at md%d", job_id, md_start)
-        plan = calculate_traid(sizes, redundancy=redundancy, vg_name=vg_name, md_start=md_start)
-
-        # Step 1: Partition each disk
-        _job_history[job_id]["step"] = "partitioning"
-        for i, disk in enumerate(disks):
-            cmds = generate_parted_commands(disk, i, plan)
-            for cmd in cmds:
-                rc, _, err = await disk_ops.run_privileged(cmd[0], cmd[1:])
-                if rc != 0:
-                    logger.error("job %s: parted failed: %s", job_id, err)
-                    _fail(f"parted: {err.strip()}")
-                    return
-
-        # Allow kernel to re-read partition tables
-        await asyncio.sleep(1)
-        for disk in disks:
-            await disk_ops.run_privileged("partprobe", [disk])
-        await asyncio.sleep(2)
-
-        # Step 2: Create RAID arrays
-        _job_history[job_id]["step"] = "creating RAID"
-        mdadm_cmds = generate_mdadm_commands(plan, disks)
-        for cmd in mdadm_cmds:
+    upd("Partitioning disks…", 5.0)
+    for i, disk in enumerate(disks):
+        for cmd in generate_parted_commands(disk, i, plan):
             rc, _, err = await disk_ops.run_privileged(cmd[0], cmd[1:])
             if rc != 0:
-                logger.error("job %s: mdadm failed: %s", job_id, err)
-                _fail(f"mdadm: {err.strip()}")
-                return
+                raise RuntimeError(f"parted: {err.strip()}")
 
-        # Wait briefly for md devices to settle
-        await asyncio.sleep(2)
+    await asyncio.sleep(1)
+    for disk in disks:
+        await disk_ops.run_privileged("partprobe", [disk])
+    await asyncio.sleep(2)
 
-        # Step 3: LVM
-        _job_history[job_id]["step"] = "creating LVM"
-        lvm_cmds = generate_lvm_commands(plan)
-        for cmd in lvm_cmds:
-            rc, _, err = await disk_ops.run_privileged(cmd[0], cmd[1:])
-            if rc != 0:
-                logger.error("job %s: lvm command failed: %s", job_id, err)
-                _fail(f"lvm: {err.strip()}")
-                return
+    upd("Creating RAID arrays…", 40.0)
+    for cmd in generate_mdadm_commands(plan, disks):
+        rc, _, err = await disk_ops.run_privileged(cmd[0], cmd[1:])
+        if rc != 0:
+            raise RuntimeError(f"mdadm: {err.strip()}")
+    await asyncio.sleep(2)
 
-        _job_history[job_id]["status"] = "complete"
-        _job_history[job_id]["step"] = "done"
-        _job_history[job_id]["finished_at"] = time.time()
-        logger.info("job %s: array creation complete", job_id)
+    upd("Creating LVM volumes…", 70.0)
+    for cmd in generate_lvm_commands(plan):
+        rc, _, err = await disk_ops.run_privileged(cmd[0], cmd[1:])
+        if rc != 0:
+            raise RuntimeError(f"lvm: {err.strip()}")
 
-    except asyncio.CancelledError:
-        logger.warning("job %s: cancelled", job_id)
-        _fail("cancelled")
-        raise
-    except Exception as exc:
-        logger.exception("job %s: unexpected error", job_id)
-        _fail(str(exc))
-    finally:
-        _active_jobs.pop(job_id, None)
+    upd("Done", 100.0)
 
 
 async def _handle_array_create(params: dict) -> dict:
     disks: list[str] = params["disks"]
-    raid_type: str = params["type"]
-    redundancy = 1 if raid_type == "traid1" else 2
+    redundancy = 1 if params["type"] == "traid1" else 2
     vg_name: str = params.get("vg_name", "traid_vg")
 
-    import time
-    job_id = str(uuid.uuid4())
-    _job_history[job_id] = {
-        "job_id": job_id,
-        "status": "accepted",
-        "step": "queued",
-        "disks": disks,
-        "type": raid_type,
-        "vg_name": vg_name,
-        "started_at": None,
-        "finished_at": None,
-        "error": None,
-        "accepted_at": time.time(),
-    }
-    task = asyncio.create_task(
-        _execute_creation(job_id, disks, redundancy, vg_name=vg_name),
-        name=f"create-{job_id[:8]}",
+    job_id = _new_job(
+        "array_create", disks=disks, type=params["type"], vg_name=vg_name
     )
-    _active_jobs[job_id] = task
-    logger.info("job %s: accepted, disks=%s type=%s vg=%s", job_id, disks, raid_type, vg_name)
+    coro = _execute_creation(job_id, disks, redundancy, vg_name)
+
+    if not _launch_locked(job_id, coro):
+        del _job_history[job_id]
+        return _busy_response()
+
+    logger.info("job %s: accepted array_create vg=%s", job_id, vg_name)
     return {"accepted": True, "job_id": job_id}
-
-
-# ---------------------------------------------------------------------------
-# Handler: mdstat_subscribe (long-lived streaming connection)
-# ---------------------------------------------------------------------------
-
-async def _handle_mdstat_subscribe(
-    _params: dict,
-    reader: asyncio.StreamReader,
-    writer: asyncio.StreamWriter,
-) -> None:
-    """
-    Send an initial ok, then stream mdstat events until the client disconnects.
-    This handler is special: it keeps the connection open.
-    """
-    q = _mdstat_reader.subscribe()
-    try:
-        while True:
-            try:
-                event = await asyncio.wait_for(q.get(), timeout=5.0)
-            except asyncio.TimeoutError:
-                # Send a keepalive ping so we detect dead connections
-                event = {"event": "keepalive"}
-
-            try:
-                await send_message(writer, event)
-            except (ConnectionResetError, BrokenPipeError, OSError):
-                break
-
-            # Check if client closed its side
-            if writer.is_closing():
-                break
-    finally:
-        _mdstat_reader.unsubscribe(q)
 
 
 # ---------------------------------------------------------------------------
@@ -242,7 +251,21 @@ async def _handle_mdstat_subscribe(
 # ---------------------------------------------------------------------------
 
 async def _handle_array_delete(params: dict) -> dict:
-    return await disk_ops.delete_array(params["vg_name"])
+    vg_name = params["vg_name"]
+    job_id = _new_job("array_delete", vg_name=vg_name, type="array_delete")
+    upd = _make_updater(job_id)
+
+    async def _delete():
+        upd("Tearing down array…", 10.0)
+        await disk_ops.delete_array(vg_name)
+        upd("Done", 100.0)
+
+    if not _launch_locked(job_id, _delete()):
+        del _job_history[job_id]
+        return _busy_response()
+
+    logger.info("job %s: accepted array_delete vg=%s", job_id, vg_name)
+    return {"accepted": True, "job_id": job_id, "vg_name": vg_name}
 
 
 # ---------------------------------------------------------------------------
@@ -265,10 +288,200 @@ async def _handle_job_delete(params: dict) -> dict:
     job_id = params["job_id"]
     if job_id not in _job_history:
         return {"deleted": False, "reason": "not found"}
-    if job_id in _active_jobs:
-        return {"deleted": False, "reason": "job is still running"}
+    task = _active_jobs.get(job_id)
+    if task and not task.done():
+        task.cancel()
+        return {"cancelled": True, "job_id": job_id}
     del _job_history[job_id]
     return {"deleted": True, "job_id": job_id}
+
+
+# ---------------------------------------------------------------------------
+# Handler: mdstat_subscribe
+# ---------------------------------------------------------------------------
+
+async def _handle_mdstat_subscribe(
+    _params: dict,
+    reader: asyncio.StreamReader,
+    writer: asyncio.StreamWriter,
+) -> None:
+    q = _mdstat_reader.subscribe()
+    try:
+        while True:
+            try:
+                event = await asyncio.wait_for(q.get(), timeout=5.0)
+            except asyncio.TimeoutError:
+                event = {"event": "keepalive"}
+            try:
+                await send_message(writer, event)
+            except (ConnectionResetError, BrokenPipeError, OSError):
+                break
+            if writer.is_closing():
+                break
+    finally:
+        _mdstat_reader.unsubscribe(q)
+
+
+# ---------------------------------------------------------------------------
+# New operation handlers
+# ---------------------------------------------------------------------------
+
+async def _handle_array_migrate(params: dict) -> dict:
+    vg_name = params["vg_name"]
+    direction = params["direction"]
+    new_disk = params.get("new_disk")
+
+    if direction == "traid1_to_traid2" and not new_disk:
+        raise ValidationError("new_disk is required for traid1_to_traid2 migration")
+
+    job_id = _new_job(
+        "array_migrate", vg_name=vg_name,
+        disks=([new_disk] if new_disk else []),
+        type="array_migrate", direction=direction,
+    )
+    upd = _make_updater(job_id)
+
+    if direction == "traid1_to_traid2":
+        coro = disk_ops.migrate_to_traid2(vg_name, new_disk, upd)
+    else:
+        coro = disk_ops.migrate_to_traid1(vg_name, upd)
+
+    if not _launch_locked(job_id, coro):
+        del _job_history[job_id]
+        return _busy_response()
+
+    logger.info("job %s: accepted migrate %s %s", job_id, vg_name, direction)
+    return {"accepted": True, "job_id": job_id}
+
+
+async def _handle_disk_replace(params: dict) -> dict:
+    vg_name = params["vg_name"]
+    old_disk = params["old_disk"]
+    new_disk = params["new_disk"]
+
+    job_id = _new_job(
+        "disk_replace", vg_name=vg_name,
+        disks=[old_disk, new_disk], type="disk_replace",
+    )
+    coro = disk_ops.disk_replace(vg_name, old_disk, new_disk, _make_updater(job_id))
+
+    if not _launch_locked(job_id, coro):
+        del _job_history[job_id]
+        return _busy_response()
+
+    return {"accepted": True, "job_id": job_id}
+
+
+async def _handle_array_grow(params: dict) -> dict:
+    vg_name = params["vg_name"]
+    new_disk = params["new_disk"]
+
+    job_id = _new_job(
+        "array_grow", vg_name=vg_name, disks=[new_disk], type="array_grow"
+    )
+    coro = disk_ops.array_grow(vg_name, new_disk, _make_updater(job_id))
+
+    if not _launch_locked(job_id, coro):
+        del _job_history[job_id]
+        return _busy_response()
+
+    return {"accepted": True, "job_id": job_id}
+
+
+async def _handle_array_shrink(params: dict) -> dict:
+    vg_name = params["vg_name"]
+    disk = params["disk_to_remove"]
+
+    job_id = _new_job(
+        "array_shrink", vg_name=vg_name, disks=[disk], type="array_shrink"
+    )
+    coro = disk_ops.array_shrink(vg_name, disk, _make_updater(job_id))
+
+    if not _launch_locked(job_id, coro):
+        del _job_history[job_id]
+        return _busy_response()
+
+    return {"accepted": True, "job_id": job_id}
+
+
+async def _handle_volume_clone(params: dict) -> dict:
+    vg_name = params["vg_name"]
+    target_disk = params["target_disk"]
+
+    job_id = _new_job(
+        "volume_clone", vg_name=vg_name, disks=[target_disk], type="volume_clone"
+    )
+    coro = disk_ops.volume_clone(vg_name, target_disk, _make_updater(job_id))
+
+    if not _launch_locked(job_id, coro):
+        del _job_history[job_id]
+        return _busy_response()
+
+    return {"accepted": True, "job_id": job_id}
+
+
+async def _handle_volume_backup(params: dict) -> dict:
+    vg_name = params["vg_name"]
+    job_id = _new_job(
+        "volume_backup", vg_name=vg_name, disks=[], type="volume_backup",
+        host=params["host"], remote_path=params["remote_path"],
+        protocol=params["protocol"],
+    )
+    coro = disk_ops.volume_backup(
+        vg_name,
+        params["protocol"], params["host"], params["remote_path"],
+        params.get("cifs_user", ""), params.get("cifs_pass", ""),
+        _make_updater(job_id),
+    )
+    if not _launch_locked(job_id, coro):
+        del _job_history[job_id]
+        return _busy_response()
+
+    return {"accepted": True, "job_id": job_id}
+
+
+async def _handle_smart_test(params: dict) -> dict:
+    """SMART tests are read-only — no array lock needed."""
+    disk = params["disk"]
+    test_type = params["test_type"]
+    job_id = _new_job(
+        "smart_test", disks=[disk], type=f"smart_{test_type}", target_disk=disk
+    )
+    report_path = REPORT_DIR / f"{job_id}_smart_{test_type}.txt"
+    _job_history[job_id]["report_url"] = f"/api/reports/{report_path.name}"
+    upd = _make_updater(job_id)
+
+    _launch_free(job_id, disk_ops.smart_test(disk, test_type, report_path, upd))
+    return {"accepted": True, "job_id": job_id}
+
+
+async def _handle_badblocks_test(params: dict) -> dict:
+    disk = params["disk"]
+    job_id = _new_job("badblocks_test", disks=[disk], type="badblocks", target_disk=disk)
+    report_path = REPORT_DIR / f"{job_id}_badblocks.txt"
+    _job_history[job_id]["report_url"] = f"/api/reports/{report_path.name}"
+
+    coro = disk_ops.badblocks_test(disk, report_path, _make_updater(job_id))
+    if not _launch_locked(job_id, coro):
+        del _job_history[job_id]
+        return _busy_response()
+
+    return {"accepted": True, "job_id": job_id}
+
+
+async def _handle_disk_erase(params: dict) -> dict:
+    disk = params["disk"]
+    mode = params.get("mode", "dod_short")
+    job_id = _new_job("disk_erase", disks=[disk], type="disk_erase", target_disk=disk)
+    report_path = REPORT_DIR / f"{job_id}_erase.txt"
+    _job_history[job_id]["report_url"] = f"/api/reports/{report_path.name}"
+
+    coro = disk_ops.disk_erase(disk, report_path, _make_updater(job_id), mode=mode)
+    if not _launch_locked(job_id, coro):
+        del _job_history[job_id]
+        return _busy_response()
+
+    return {"accepted": True, "job_id": job_id}
 
 
 # ---------------------------------------------------------------------------
@@ -276,14 +489,24 @@ async def _handle_job_delete(params: dict) -> dict:
 # ---------------------------------------------------------------------------
 
 _HANDLERS = {
-    "disk_scan": _handle_disk_scan,
-    "array_detail": _handle_array_detail,
-    "lvm_report": _handle_lvm_report,
-    "array_create": _handle_array_create,
-    "array_delete": _handle_array_delete,
-    "vg_rename": _handle_vg_rename,
-    "jobs_list": _handle_jobs_list,
-    "job_delete": _handle_job_delete,
+    "disk_scan":       _handle_disk_scan,
+    "array_detail":    _handle_array_detail,
+    "lvm_report":      _handle_lvm_report,
+    "array_create":    _handle_array_create,
+    "array_delete":    _handle_array_delete,
+    "vg_rename":       _handle_vg_rename,
+    "jobs_list":       _handle_jobs_list,
+    "job_delete":      _handle_job_delete,
+    # new
+    "array_migrate":   _handle_array_migrate,
+    "disk_replace":    _handle_disk_replace,
+    "array_grow":      _handle_array_grow,
+    "array_shrink":    _handle_array_shrink,
+    "volume_clone":    _handle_volume_clone,
+    "volume_backup":   _handle_volume_backup,
+    "smart_test":      _handle_smart_test,
+    "badblocks_test":  _handle_badblocks_test,
+    "disk_erase":      _handle_disk_erase,
 }
 
 
@@ -306,21 +529,16 @@ async def _handle_client(
     except ValidationError as exc:
         logger.warning("validation error from %s: %s", peer, exc)
         await send_message(writer, {
-            "id": request_id,
-            "status": "error",
-            "data": None,
+            "id": request_id, "status": "error", "data": None,
             "error": {"code": "VALIDATION_ERROR", "message": str(exc)},
         })
         writer.close()
         return
 
-    # Special case: mdstat_subscribe needs the stream objects
     if action == "mdstat_subscribe":
         await send_message(writer, {
-            "id": request_id,
-            "status": "ok",
-            "data": {"subscribed": True},
-            "error": None,
+            "id": request_id, "status": "ok",
+            "data": {"subscribed": True}, "error": None,
         })
         await _handle_mdstat_subscribe(validated_params, reader, writer)
         writer.close()
@@ -329,18 +547,20 @@ async def _handle_client(
     handler = _HANDLERS[action]
     try:
         data = await handler(validated_params)
-        await send_message(writer, {
-            "id": request_id,
-            "status": "ok",
-            "data": data,
-            "error": None,
-        })
+        # Handlers that are busy return {"accepted": False, "reason": "ARRAY_BUSY"}
+        if isinstance(data, dict) and data.get("reason") == "ARRAY_BUSY":
+            await send_message(writer, {
+                "id": request_id, "status": "error", "data": None,
+                "error": {"code": "ARRAY_BUSY", "message": data.get("message", "Array busy")},
+            })
+        else:
+            await send_message(writer, {
+                "id": request_id, "status": "ok", "data": data, "error": None,
+            })
     except Exception as exc:
         logger.exception("handler %s error: %s", action, exc)
         await send_message(writer, {
-            "id": request_id,
-            "status": "error",
-            "data": None,
+            "id": request_id, "status": "error", "data": None,
             "error": {"code": "SUBPROCESS_FAILED", "message": str(exc)},
         })
     finally:
@@ -359,13 +579,13 @@ async def main() -> None:
         logger.error("worker daemon must run as root")
         sys.exit(1)
 
-    # Remove stale socket
     if SOCKET_PATH.exists():
         SOCKET_PATH.unlink()
 
+    REPORT_DIR.mkdir(parents=True, exist_ok=True)
+
     server = await asyncio.start_unix_server(_handle_client, path=str(SOCKET_PATH))
 
-    # Set socket ownership and permissions
     try:
         import grp
         gid = grp.getgrnam(SOCKET_GROUP).gr_gid
@@ -380,7 +600,7 @@ async def main() -> None:
 
     loop = asyncio.get_running_loop()
 
-    def _shutdown() -> None:
+    def _shutdown():
         logger.info("shutdown signal received")
         server.close()
 

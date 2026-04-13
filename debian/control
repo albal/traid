@@ -16,6 +16,12 @@ Depends: ${misc:Depends},
  mdadm,
  lvm2,
  parted,
+ e2fsprogs,
+ xfsprogs,
+ smartmontools,
+ rsync,
+ cifs-utils,
+ nfs-common,
  lighttpd
 Description: TSEW RAID Web Appliance Manager
  Secure, lightweight storage management appliance implementing TRAID

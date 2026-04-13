@@ -2,25 +2,30 @@
 Command whitelist enforcement — the security kernel of the daemon.
 
 Never accepts arbitrary shell strings. validate_request() returns a
-(executable, args) tuple consumed directly by asyncio.create_subprocess_exec,
-so no shell interpolation is possible at any stage.
+(action, validated_params) tuple; all subprocess execution goes through
+asyncio.create_subprocess_exec, so no shell interpolation is possible.
 """
 
 import re
 from typing import Any
 
-# Regex for valid block device paths: /dev/sdX, /dev/nvme0n1, /dev/vda, etc.
-# Rejects path traversal, /proc/, embedded whitespace, shell metacharacters.
+# Block device paths: /dev/sdX, /dev/nvme0n1, /dev/vda, etc.
 _DEV_PATH_RE = re.compile(r"^/dev/[a-z]{2,8}[0-9]{0,3}(p[0-9]{1,3})?$")
 
-# Regex for valid /dev/mdX device paths
+# /dev/mdX device paths
 _MD_PATH_RE = re.compile(r"^/dev/md[0-9]{1,4}$")
 
-# Regex for LVM volume group names (alphanumeric, hyphens, underscores, dots)
+# LVM volume group names
 _VG_NAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_.+-]{0,126}$")
 
-# Regex for UUID job IDs
+# UUID job IDs
 _JOB_ID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+
+# Remote path for backup: NFS host:/path or CIFS //host/share
+_REMOTE_PATH_RE = re.compile(r"^[a-zA-Z0-9._-]{1,253}[:/].{1,255}$")
+
+# CIFS credential: no newlines or shell metacharacters
+_CRED_RE = re.compile(r"^[^\n\r;&|`$<>]{0,256}$")
 
 
 class ValidationError(Exception):
@@ -58,54 +63,68 @@ def _validate_raid_type(value: Any, field: str) -> str:
     return value
 
 
-# Each action entry: required_params and optional_params define the schema.
-# Values are callables (validator, field_name) -> validated_value.
+def _validate_direction(value: Any, field: str) -> str:
+    allowed = {"traid1_to_traid2", "traid2_to_traid1"}
+    if value not in allowed:
+        raise ValidationError(f"{field}: must be one of {sorted(allowed)}, got {value!r}")
+    return value
+
+
+def _validate_test_type(value: Any, field: str) -> str:
+    allowed = {"short", "long"}
+    if value not in allowed:
+        raise ValidationError(f"{field}: must be 'short' or 'long', got {value!r}")
+    return value
+
+
+def _validate_protocol(value: Any, field: str) -> str:
+    allowed = {"cifs", "nfs"}
+    if value not in allowed:
+        raise ValidationError(f"{field}: must be 'cifs' or 'nfs', got {value!r}")
+    return value
+
+
+def _validate_remote_path(value: Any, field: str) -> str:
+    if not isinstance(value, str) or not _REMOTE_PATH_RE.match(value):
+        raise ValidationError(f"{field}: invalid remote path {value!r}")
+    return value
+
+
+def _validate_cred(value: Any, field: str) -> str:
+    if not isinstance(value, str) or not _CRED_RE.match(value):
+        raise ValidationError(f"{field}: invalid credential value")
+    return value
+
+
 _ALLOWED_ACTIONS: dict[str, dict] = {
-    "disk_scan": {
-        "required": [],
-        "optional": [],
-    },
-    "array_detail": {
-        "required": ["device"],
-        "optional": [],
-    },
-    "lvm_report": {
-        "required": [],
-        "optional": [],
-    },
-    "array_create": {
-        "required": ["disks", "type"],
-        "optional": ["vg_name"],
-    },
-    "mdstat_subscribe": {
-        "required": [],
-        "optional": [],
-    },
-    "array_delete": {
-        "required": ["vg_name"],
-        "optional": [],
-    },
-    "vg_rename": {
-        "required": ["vg_name", "new_name"],
-        "optional": [],
-    },
-    "jobs_list": {
-        "required": [],
-        "optional": [],
-    },
-    "job_delete": {
-        "required": ["job_id"],
-        "optional": [],
-    },
+    # ---- existing ----
+    "disk_scan":         {"required": [], "optional": []},
+    "array_detail":      {"required": ["device"], "optional": []},
+    "lvm_report":        {"required": [], "optional": []},
+    "array_create":      {"required": ["disks", "type"], "optional": ["vg_name"]},
+    "mdstat_subscribe":  {"required": [], "optional": []},
+    "array_delete":      {"required": ["vg_name"], "optional": []},
+    "vg_rename":         {"required": ["vg_name", "new_name"], "optional": []},
+    "jobs_list":         {"required": [], "optional": []},
+    "job_delete":        {"required": ["job_id"], "optional": []},
+    # ---- new ----
+    "array_migrate":     {"required": ["vg_name", "direction"], "optional": ["new_disk"]},
+    "disk_replace":      {"required": ["vg_name", "old_disk", "new_disk"], "optional": []},
+    "array_grow":        {"required": ["vg_name", "new_disk"], "optional": []},
+    "array_shrink":      {"required": ["vg_name", "disk_to_remove"], "optional": []},
+    "volume_clone":      {"required": ["vg_name", "target_disk"], "optional": []},
+    "volume_backup":     {"required": ["vg_name", "protocol", "host", "remote_path"],
+                          "optional": ["cifs_user", "cifs_pass"]},
+    "smart_test":        {"required": ["disk", "test_type"], "optional": []},
+    "badblocks_test":    {"required": ["disk"], "optional": []},
+    "disk_erase":        {"required": ["disk"], "optional": ["mode"]},
 }
 
 
 def validate_request(payload: dict) -> tuple[str, dict]:
     """
     Validate an incoming request payload against the action whitelist.
-
-    Returns (action, validated_params). Raises ValidationError on any
-    schema violation, unknown action, extra keys, or bad parameter values.
+    Returns (action, validated_params). Raises ValidationError on any violation.
     """
     if not isinstance(payload, dict):
         raise ValidationError("payload must be a JSON object")
@@ -123,12 +142,10 @@ def validate_request(payload: dict) -> tuple[str, dict]:
     optional = set(schema["optional"])
     allowed_keys = required | optional
 
-    # Reject unexpected keys
     extra = set(raw_params.keys()) - allowed_keys
     if extra:
         raise ValidationError(f"unexpected param keys for {action!r}: {sorted(extra)}")
 
-    # Check all required keys are present
     missing = required - set(raw_params.keys())
     if missing:
         raise ValidationError(f"missing required params for {action!r}: {sorted(missing)}")
@@ -147,7 +164,6 @@ def validate_request(payload: dict) -> tuple[str, dict]:
         validated["disks"] = [
             _validate_dev_path(d, f"disks[{i}]") for i, d in enumerate(disks_raw)
         ]
-        # Reject duplicates
         if len(set(validated["disks"])) != len(validated["disks"]):
             raise ValidationError("disks: duplicate device paths")
         validated["type"] = _validate_raid_type(raw_params["type"], "type")
@@ -166,5 +182,51 @@ def validate_request(payload: dict) -> tuple[str, dict]:
         if not isinstance(job_id, str) or not _JOB_ID_RE.match(job_id):
             raise ValidationError(f"job_id: invalid UUID {job_id!r}")
         validated["job_id"] = job_id
+
+    elif action == "array_migrate":
+        validated["vg_name"] = _validate_vg_name(raw_params["vg_name"], "vg_name")
+        validated["direction"] = _validate_direction(raw_params["direction"], "direction")
+        if "new_disk" in raw_params:
+            validated["new_disk"] = _validate_dev_path(raw_params["new_disk"], "new_disk")
+
+    elif action == "disk_replace":
+        validated["vg_name"] = _validate_vg_name(raw_params["vg_name"], "vg_name")
+        validated["old_disk"] = _validate_dev_path(raw_params["old_disk"], "old_disk")
+        validated["new_disk"] = _validate_dev_path(raw_params["new_disk"], "new_disk")
+
+    elif action == "array_grow":
+        validated["vg_name"] = _validate_vg_name(raw_params["vg_name"], "vg_name")
+        validated["new_disk"] = _validate_dev_path(raw_params["new_disk"], "new_disk")
+
+    elif action == "array_shrink":
+        validated["vg_name"] = _validate_vg_name(raw_params["vg_name"], "vg_name")
+        validated["disk_to_remove"] = _validate_dev_path(raw_params["disk_to_remove"], "disk_to_remove")
+
+    elif action == "volume_clone":
+        validated["vg_name"] = _validate_vg_name(raw_params["vg_name"], "vg_name")
+        validated["target_disk"] = _validate_dev_path(raw_params["target_disk"], "target_disk")
+
+    elif action == "volume_backup":
+        validated["vg_name"] = _validate_vg_name(raw_params["vg_name"], "vg_name")
+        validated["protocol"] = _validate_protocol(raw_params["protocol"], "protocol")
+        validated["host"] = _validate_cred(raw_params["host"], "host")
+        validated["remote_path"] = _validate_remote_path(raw_params["remote_path"], "remote_path")
+        validated["cifs_user"] = _validate_cred(raw_params.get("cifs_user", ""), "cifs_user")
+        validated["cifs_pass"] = _validate_cred(raw_params.get("cifs_pass", ""), "cifs_pass")
+
+    elif action == "smart_test":
+        validated["disk"] = _validate_dev_path(raw_params["disk"], "disk")
+        validated["test_type"] = _validate_test_type(raw_params["test_type"], "test_type")
+
+    elif action == "badblocks_test":
+        validated["disk"] = _validate_dev_path(raw_params["disk"], "disk")
+
+    elif action == "disk_erase":
+        validated["disk"] = _validate_dev_path(raw_params["disk"], "disk")
+        if "mode" in raw_params:
+            allowed_modes = {"quick", "dod_short", "dod_7"}
+            if raw_params["mode"] not in allowed_modes:
+                raise ValidationError(f"mode: must be one of {sorted(allowed_modes)}")
+            validated["mode"] = raw_params["mode"]
 
     return action, validated
