@@ -1,0 +1,26 @@
+[Unit]
+Description=TRAID Web API (Uvicorn/FastAPI)
+Documentation=https://github.com/your-org/traid
+After=network.target hybrid-worker.service
+Requires=hybrid-worker.service
+
+[Service]
+Type=simple
+User=www-data
+Group=www-data
+WorkingDirectory=/home/al/TRAID
+ExecStart=/home/al/TRAID/venv/bin/uvicorn api.main:app --host 127.0.0.1 --port 8000
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=traid-web
+
+# Security hardening
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ReadWritePaths=/home/al/TRAID
+
+[Install]
+WantedBy=multi-user.target

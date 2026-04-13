@@ -1,0 +1,21 @@
+[Unit]
+Description=TRAID Privileged Worker Daemon
+Documentation=https://github.com/your-org/traid
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/home/al/TRAID/venv/bin/python -m worker.daemon
+WorkingDirectory=/home/al/TRAID
+Restart=always
+RestartSec=3
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=traid-worker
+
+# Security hardening
+PrivateTmp=yes
+NoNewPrivileges=no
+
+[Install]
+WantedBy=multi-user.target
