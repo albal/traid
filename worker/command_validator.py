@@ -16,6 +16,12 @@ _DEV_PATH_RE = re.compile(r"^/dev/[a-z]{2,8}[0-9]{0,3}(p[0-9]{1,3})?$")
 # Regex for valid /dev/mdX device paths
 _MD_PATH_RE = re.compile(r"^/dev/md[0-9]{1,4}$")
 
+# Regex for LVM volume group names (alphanumeric, hyphens, underscores, dots)
+_VG_NAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_.+-]{0,126}$")
+
+# Regex for UUID job IDs
+_JOB_ID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+
 
 class ValidationError(Exception):
     pass
@@ -34,6 +40,14 @@ def _validate_md_path(value: Any, field: str) -> str:
         raise ValidationError(f"{field}: expected string, got {type(value).__name__}")
     if not _MD_PATH_RE.match(value):
         raise ValidationError(f"{field}: invalid md device path {value!r}")
+    return value
+
+
+def _validate_vg_name(value: Any, field: str) -> str:
+    if not isinstance(value, str):
+        raise ValidationError(f"{field}: expected string, got {type(value).__name__}")
+    if not _VG_NAME_RE.match(value):
+        raise ValidationError(f"{field}: invalid volume group name {value!r}")
     return value
 
 
@@ -61,10 +75,26 @@ _ALLOWED_ACTIONS: dict[str, dict] = {
     },
     "array_create": {
         "required": ["disks", "type"],
-        "optional": [],
+        "optional": ["vg_name"],
     },
     "mdstat_subscribe": {
         "required": [],
+        "optional": [],
+    },
+    "array_delete": {
+        "required": ["vg_name"],
+        "optional": [],
+    },
+    "vg_rename": {
+        "required": ["vg_name", "new_name"],
+        "optional": [],
+    },
+    "jobs_list": {
+        "required": [],
+        "optional": [],
+    },
+    "job_delete": {
+        "required": ["job_id"],
         "optional": [],
     },
 }
@@ -121,5 +151,20 @@ def validate_request(payload: dict) -> tuple[str, dict]:
         if len(set(validated["disks"])) != len(validated["disks"]):
             raise ValidationError("disks: duplicate device paths")
         validated["type"] = _validate_raid_type(raw_params["type"], "type")
+        if "vg_name" in raw_params:
+            validated["vg_name"] = _validate_vg_name(raw_params["vg_name"], "vg_name")
+
+    elif action == "array_delete":
+        validated["vg_name"] = _validate_vg_name(raw_params["vg_name"], "vg_name")
+
+    elif action == "vg_rename":
+        validated["vg_name"] = _validate_vg_name(raw_params["vg_name"], "vg_name")
+        validated["new_name"] = _validate_vg_name(raw_params["new_name"], "new_name")
+
+    elif action == "job_delete":
+        job_id = raw_params.get("job_id", "")
+        if not isinstance(job_id, str) or not _JOB_ID_RE.match(job_id):
+            raise ValidationError(f"job_id: invalid UUID {job_id!r}")
+        validated["job_id"] = job_id
 
     return action, validated

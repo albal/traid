@@ -106,9 +106,7 @@ def _pick_level(n: int, redundancy: int) -> int | None:
     if redundancy == 2:
         if n >= 4:
             return 6
-        if n == 3:
-            return 6
-        return None
+        return None  # RAID6 requires at least 4 drives
     raise ValueError(f"unsupported redundancy level {redundancy}")
 
 
@@ -121,6 +119,7 @@ def calculate_traid(
     redundancy: int = 1,
     vg_name: str = "traid_vg",
     lv_name: str = "traid_lv",
+    md_start: int = 0,
 ) -> Plan:
     """
     Calculate the TRAID partition/RAID/LVM plan for the given drive sizes.
@@ -147,8 +146,9 @@ def calculate_traid(
     original = list(enumerate(sizes_bytes))
     sorted_indices = sorted(range(n_drives), key=lambda i: sizes_bytes[i])
 
-    # Track how many bytes have been allocated on each drive so far
-    allocated: dict[int, int] = {i: 0 for i in range(n_drives)}
+    # Track how many bytes have been allocated on each drive so far.
+    # Start at ALIGNMENT (1 MiB) to leave room for the GPT primary header.
+    allocated: dict[int, int] = {i: ALIGNMENT for i in range(n_drives)}
     partitions: dict[int, list[Partition]] = {i: [] for i in range(n_drives)}
     raid_groups: list[RaidGroup] = []
     tier = 0
@@ -162,9 +162,12 @@ def calculate_traid(
         if level is None:
             break  # too few drives to form any group
 
-        # Tier slice size = smallest drive's remaining free space
+        # Tier slice size = smallest drive's remaining usable space.
+        # Reserve 1 MiB at the end for the GPT backup header so parted
+        # never tries to write past the last addressable MiB.
         smallest_idx = active_pool[0]
-        remaining_on_smallest = sizes_bytes[smallest_idx] - allocated[smallest_idx]
+        usable_end = sizes_bytes[smallest_idx] - ALIGNMENT
+        remaining_on_smallest = usable_end - allocated[smallest_idx]
         tier_size = _align_down(remaining_on_smallest)
 
         if tier_size < ALIGNMENT:
@@ -175,9 +178,9 @@ def calculate_traid(
         for disk_idx in active_pool:
             start = _align_up(allocated[disk_idx])
             end = start + tier_size
-            if end > sizes_bytes[disk_idx]:
+            if end > sizes_bytes[disk_idx] - ALIGNMENT:
                 # Safety: should not happen given tier_size calculation, but guard anyway
-                end = _align_down(sizes_bytes[disk_idx])
+                end = _align_down(sizes_bytes[disk_idx] - ALIGNMENT)
                 actual_size = end - start
                 if actual_size < ALIGNMENT:
                     continue
@@ -207,7 +210,7 @@ def calculate_traid(
         tier += 1
 
     total_usable = sum(rg.usable_bytes for rg in raid_groups)
-    md_devices = [f"/dev/md{i}" for i in range(len(raid_groups))]
+    md_devices = [f"/dev/md{md_start + i}" for i in range(len(raid_groups))]
 
     return Plan(
         drives=sizes_bytes,
@@ -261,9 +264,12 @@ def generate_mdadm_commands(
     Partition device names are derived by appending the partition number
     (1-based position within the drive's partition list for this tier).
     """
+    # Use the actual md device paths from the plan (respects md_start offset)
+    md_dev_map = {rg.tier: dev for rg, dev in zip(plan.raid_groups, plan.lvm_plan.pvcreate)}
+
     cmds: list[list[str]] = []
     for rg in plan.raid_groups:
-        md_dev = f"/dev/md{rg.tier}"
+        md_dev = md_dev_map[rg.tier]
         member_devs: list[str] = []
         for p in rg.partitions:
             base = disk_paths[p.disk_index]
@@ -280,7 +286,8 @@ def generate_mdadm_commands(
             "--level", str(rg.level),
             "--raid-devices", str(len(member_devs)),
             "--metadata", "1.2",
-            "--name", f"traid:{rg.tier}",
+            "--name", f"traid{rg.tier}",
+            "--run",          # never prompt interactively
             *member_devs,
         ])
 

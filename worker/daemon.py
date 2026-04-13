@@ -57,6 +57,9 @@ _mdstat_reader: MdstatReader = MdstatReader()
 # Active creation tasks: job_id -> asyncio.Task
 _active_jobs: dict[str, asyncio.Task] = {}
 
+# Job history: job_id -> metadata dict (persists until explicitly deleted)
+_job_history: dict[str, dict] = {}
+
 
 # ---------------------------------------------------------------------------
 # Handler: disk_scan
@@ -88,8 +91,17 @@ async def _handle_lvm_report(_params: dict) -> dict:
 # Handler: array_create (async job)
 # ---------------------------------------------------------------------------
 
-async def _execute_creation(job_id: str, disks: list[str], redundancy: int) -> None:
+async def _execute_creation(job_id: str, disks: list[str], redundancy: int, vg_name: str = "traid_vg") -> None:
+    import time
+    _job_history[job_id]["status"] = "running"
+    _job_history[job_id]["started_at"] = time.time()
     logger.info("job %s: starting array creation for %s", job_id, disks)
+
+    def _fail(reason: str) -> None:
+        _job_history[job_id]["status"] = "failed"
+        _job_history[job_id]["error"] = reason
+        _job_history[job_id]["finished_at"] = time.time()
+
     try:
         sizes = []
         for disk in disks:
@@ -98,18 +110,23 @@ async def _execute_creation(job_id: str, disks: list[str], redundancy: int) -> N
             )
             if rc != 0:
                 logger.error("job %s: lsblk failed for %s", job_id, disk)
+                _fail(f"lsblk failed for {disk}")
                 return
             sizes.append(int(out.strip()))
 
-        plan = calculate_traid(sizes, redundancy=redundancy)
+        md_start = await disk_ops.next_free_md_index()
+        logger.info("job %s: using md devices starting at md%d", job_id, md_start)
+        plan = calculate_traid(sizes, redundancy=redundancy, vg_name=vg_name, md_start=md_start)
 
         # Step 1: Partition each disk
+        _job_history[job_id]["step"] = "partitioning"
         for i, disk in enumerate(disks):
             cmds = generate_parted_commands(disk, i, plan)
             for cmd in cmds:
                 rc, _, err = await disk_ops.run_privileged(cmd[0], cmd[1:])
                 if rc != 0:
                     logger.error("job %s: parted failed: %s", job_id, err)
+                    _fail(f"parted: {err.strip()}")
                     return
 
         # Allow kernel to re-read partition tables
@@ -119,31 +136,40 @@ async def _execute_creation(job_id: str, disks: list[str], redundancy: int) -> N
         await asyncio.sleep(2)
 
         # Step 2: Create RAID arrays
+        _job_history[job_id]["step"] = "creating RAID"
         mdadm_cmds = generate_mdadm_commands(plan, disks)
         for cmd in mdadm_cmds:
             rc, _, err = await disk_ops.run_privileged(cmd[0], cmd[1:])
             if rc != 0:
                 logger.error("job %s: mdadm failed: %s", job_id, err)
+                _fail(f"mdadm: {err.strip()}")
                 return
 
         # Wait briefly for md devices to settle
         await asyncio.sleep(2)
 
         # Step 3: LVM
+        _job_history[job_id]["step"] = "creating LVM"
         lvm_cmds = generate_lvm_commands(plan)
         for cmd in lvm_cmds:
             rc, _, err = await disk_ops.run_privileged(cmd[0], cmd[1:])
             if rc != 0:
                 logger.error("job %s: lvm command failed: %s", job_id, err)
+                _fail(f"lvm: {err.strip()}")
                 return
 
+        _job_history[job_id]["status"] = "complete"
+        _job_history[job_id]["step"] = "done"
+        _job_history[job_id]["finished_at"] = time.time()
         logger.info("job %s: array creation complete", job_id)
 
     except asyncio.CancelledError:
         logger.warning("job %s: cancelled", job_id)
+        _fail("cancelled")
         raise
-    except Exception:
+    except Exception as exc:
         logger.exception("job %s: unexpected error", job_id)
+        _fail(str(exc))
     finally:
         _active_jobs.pop(job_id, None)
 
@@ -152,14 +178,28 @@ async def _handle_array_create(params: dict) -> dict:
     disks: list[str] = params["disks"]
     raid_type: str = params["type"]
     redundancy = 1 if raid_type == "traid1" else 2
+    vg_name: str = params.get("vg_name", "traid_vg")
 
+    import time
     job_id = str(uuid.uuid4())
+    _job_history[job_id] = {
+        "job_id": job_id,
+        "status": "accepted",
+        "step": "queued",
+        "disks": disks,
+        "type": raid_type,
+        "vg_name": vg_name,
+        "started_at": None,
+        "finished_at": None,
+        "error": None,
+        "accepted_at": time.time(),
+    }
     task = asyncio.create_task(
-        _execute_creation(job_id, disks, redundancy),
+        _execute_creation(job_id, disks, redundancy, vg_name=vg_name),
         name=f"create-{job_id[:8]}",
     )
     _active_jobs[job_id] = task
-    logger.info("job %s: accepted, disks=%s type=%s", job_id, disks, raid_type)
+    logger.info("job %s: accepted, disks=%s type=%s vg=%s", job_id, disks, raid_type, vg_name)
     return {"accepted": True, "job_id": job_id}
 
 
@@ -198,6 +238,40 @@ async def _handle_mdstat_subscribe(
 
 
 # ---------------------------------------------------------------------------
+# Handler: array_delete
+# ---------------------------------------------------------------------------
+
+async def _handle_array_delete(params: dict) -> dict:
+    return await disk_ops.delete_array(params["vg_name"])
+
+
+# ---------------------------------------------------------------------------
+# Handler: vg_rename
+# ---------------------------------------------------------------------------
+
+async def _handle_vg_rename(params: dict) -> dict:
+    return await disk_ops.rename_vg(params["vg_name"], params["new_name"])
+
+
+# ---------------------------------------------------------------------------
+# Handler: jobs_list / job_delete
+# ---------------------------------------------------------------------------
+
+async def _handle_jobs_list(_params: dict) -> dict:
+    return {"jobs": list(_job_history.values())}
+
+
+async def _handle_job_delete(params: dict) -> dict:
+    job_id = params["job_id"]
+    if job_id not in _job_history:
+        return {"deleted": False, "reason": "not found"}
+    if job_id in _active_jobs:
+        return {"deleted": False, "reason": "job is still running"}
+    del _job_history[job_id]
+    return {"deleted": True, "job_id": job_id}
+
+
+# ---------------------------------------------------------------------------
 # Dispatcher
 # ---------------------------------------------------------------------------
 
@@ -206,6 +280,10 @@ _HANDLERS = {
     "array_detail": _handle_array_detail,
     "lvm_report": _handle_lvm_report,
     "array_create": _handle_array_create,
+    "array_delete": _handle_array_delete,
+    "vg_rename": _handle_vg_rename,
+    "jobs_list": _handle_jobs_list,
+    "job_delete": _handle_job_delete,
 }
 
 

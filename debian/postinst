@@ -16,12 +16,20 @@ case "$1" in
             traid \
             --quiet
 
-        # Enable lighttpd site configuration.
-        if command -v lighty-enable-mod >/dev/null 2>&1; then
-            lighty-enable-mod traid || true
-            if [ -d /run/systemd/system ]; then
-                systemctl reload-or-restart lighttpd.service || true
-            fi
+        # Point lighttpd's document root at the TRAID static files.
+        # lighty-enable-mod only handles numbered module configs, so we
+        # manage the symlink and document-root ourselves.
+        if [ -f /etc/lighttpd/lighttpd.conf ]; then
+            sed -i 's|server\.document-root\s*=\s*"/var/www/html"|server.document-root = "/usr/share/traid"|' \
+                /etc/lighttpd/lighttpd.conf
+        fi
+
+        # Enable the TRAID lighttpd configuration.
+        ln -sf /etc/lighttpd/conf-available/traid.conf \
+               /etc/lighttpd/conf-enabled/traid.conf
+
+        if [ -d /run/systemd/system ]; then
+            systemctl reload-or-restart lighttpd.service || true
         fi
 
         # Reload unit files (handles both fresh install and upgrade).

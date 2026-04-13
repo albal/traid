@@ -8,10 +8,10 @@ case "$1" in
             systemctl stop traid-worker.service || true
         fi
 
-        # Disable lighttpd site on remove; leave in place for upgrade
-        # (postinst will re-enable it).
-        if [ "$1" = "remove" ] && command -v lighty-disable-mod >/dev/null 2>&1; then
-            lighty-disable-mod traid || true
+        # Disable TRAID lighttpd site on remove (leave in place for upgrade;
+        # postinst will re-enable it).
+        if [ "$1" = "remove" ]; then
+            rm -f /etc/lighttpd/conf-enabled/traid.conf
             if [ -d /run/systemd/system ]; then
                 systemctl reload-or-restart lighttpd.service || true
             fi

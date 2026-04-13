@@ -23,6 +23,7 @@ from api.models import (
     CreateAccepted,
     DiskInfo,
     RaidGroupPreview,
+    VolumeRenameRequest,
 )
 from api.websocket_manager import WebSocketManager
 from worker.traid_algorithm import capacity_preview as _calc_preview
@@ -144,7 +145,7 @@ async def create_array(request: ArrayCreationRequest):
     try:
         data = await uds_client.send_request(
             "array_create",
-            {"disks": request.disks, "type": request.type},
+            {"disks": request.disks, "type": request.type, "vg_name": request.vg_name},
         )
     except uds_client.WorkerUnavailableError as exc:
         raise HTTPException(status_code=503, detail=str(exc))
@@ -152,6 +153,53 @@ async def create_array(request: ArrayCreationRequest):
         raise _worker_error_to_http(exc)
 
     return CreateAccepted(**data)
+
+
+@app.get("/api/jobs")
+async def list_jobs():
+    try:
+        return await uds_client.send_request("jobs_list")
+    except uds_client.WorkerUnavailableError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+
+
+@app.delete("/api/jobs/{job_id}")
+async def delete_job(job_id: str):
+    import re
+    if not re.match(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", job_id):
+        raise HTTPException(status_code=400, detail="invalid job id")
+    try:
+        return await uds_client.send_request("job_delete", {"job_id": job_id})
+    except uds_client.WorkerUnavailableError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+
+
+@app.patch("/api/volumes/{vg_name}", status_code=200)
+async def rename_volume(vg_name: str, request: VolumeRenameRequest):
+    import re
+    if not re.match(r"^[a-zA-Z0-9][a-zA-Z0-9_.+-]{0,126}$", vg_name):
+        raise HTTPException(status_code=400, detail="invalid volume group name")
+    try:
+        return await uds_client.send_request(
+            "vg_rename", {"vg_name": vg_name, "new_name": request.new_name}
+        )
+    except uds_client.WorkerUnavailableError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    except uds_client.WorkerError as exc:
+        raise _worker_error_to_http(exc)
+
+
+@app.delete("/api/volumes/{vg_name}", status_code=200)
+async def delete_volume(vg_name: str):
+    import re
+    if not re.match(r"^[a-zA-Z0-9][a-zA-Z0-9_.+-]{0,126}$", vg_name):
+        raise HTTPException(status_code=400, detail="invalid volume group name")
+    try:
+        return await uds_client.send_request("array_delete", {"vg_name": vg_name})
+    except uds_client.WorkerUnavailableError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    except uds_client.WorkerError as exc:
+        raise _worker_error_to_http(exc)
 
 
 @app.websocket("/ws/progress")
