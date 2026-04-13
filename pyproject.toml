@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "traid"
+version = "0.1.1"
+description = "TSEW RAID Web Appliance Manager"
+requires-python = ">=3.13"
+dependencies = [
+    "fastapi==0.111.0",
+    "uvicorn[standard]==0.29.0",
+    "pydantic==2.7.1",
+    "python-json-logger==2.0.7",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["api*", "worker*", "shared*"]

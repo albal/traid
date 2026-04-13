@@ -9,19 +9,12 @@ case "$1" in
         # regenerated from scratch so stale bytecode is never an issue.
         python3.13 -m venv "$TRAID_DIR/venv"
 
-        if [ -d "$TRAID_DIR/vendor" ]; then
-            # Offline install from vendored wheels bundled in the package.
-            "$TRAID_DIR/venv/bin/pip" install \
-                --no-index \
-                --find-links "$TRAID_DIR/vendor" \
-                -r "$TRAID_DIR/requirements.txt" \
-                --quiet
-        else
-            # Fallback: install from PyPI (requires network on target).
-            "$TRAID_DIR/venv/bin/pip" install \
-                -r "$TRAID_DIR/requirements.txt" \
-                --quiet
-        fi
+        # Install traid and all dependencies from the pre-built wheels bundled in the package.
+        "$TRAID_DIR/venv/bin/pip" install \
+            --no-index \
+            --find-links "$TRAID_DIR/vendor" \
+            traid \
+            --quiet
 
         # Reload unit files (handles both fresh install and upgrade).
         if [ -d /run/systemd/system ]; then

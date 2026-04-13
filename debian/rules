@@ -7,13 +7,20 @@ PKG_DIR     = $(CURDIR)/debian/traid
 	dh $@
 
 override_dh_auto_build:
-	# Python source only — nothing to compile.
+	# Build the traid wheel from source into vendor/.
+	python3 -m pip wheel --no-deps . -w vendor/
+	# Pre-download all runtime dependency wheels (with transitive deps) into vendor/.
+	python3 -m pip download \
+	    fastapi==0.111.0 \
+	    "uvicorn[standard]==0.29.0" \
+	    pydantic==2.7.1 \
+	    python-json-logger==2.0.7 \
+	    -d vendor/ --quiet
 
 override_dh_auto_install:
-	install -d $(PKG_DIR)$(INSTALL_DIR)
-	cp -r api worker shared static requirements.txt $(PKG_DIR)$(INSTALL_DIR)/
-	# Include pre-downloaded wheels when present (added by CI before build).
-	[ -d vendor ] && cp -r vendor $(PKG_DIR)$(INSTALL_DIR)/ || true
+	install -d $(PKG_DIR)$(INSTALL_DIR)/vendor
+	cp vendor/*.whl $(PKG_DIR)$(INSTALL_DIR)/vendor/
+	cp -r static $(PKG_DIR)$(INSTALL_DIR)/
 
 	# Install systemd units, rewriting dev paths to installed paths.
 	install -d $(PKG_DIR)/usr/lib/systemd/system

@@ -2,7 +2,9 @@ Source: traid
 Section: admin
 Priority: optional
 Maintainer: TRAID <traid@tsew.net>
-Build-Depends: debhelper-compat (= 13)
+Build-Depends: debhelper-compat (= 13),
+ python3-pip,
+ python3-setuptools
 Standards-Version: 4.7.4.1
 Rules-Requires-Root: no
 
