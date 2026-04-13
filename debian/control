@@ -1,7 +1,7 @@
 Source: traid
 Section: admin
 Priority: optional
-Maintainer: TRAID <traid@localhost>
+Maintainer: TRAID <traid@tsew.net>
 Build-Depends: debhelper-compat (= 13)
 Standards-Version: 4.7.4.1
 Rules-Requires-Root: no
