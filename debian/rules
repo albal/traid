@@ -8,9 +8,11 @@ PKG_DIR     = $(CURDIR)/debian/traid
 
 override_dh_auto_build:
 	# Build the traid wheel from source into vendor/.
-	python3 -m pip wheel --no-deps . -w vendor/
+	python3.13 -m pip wheel --no-deps . -w vendor/
 	# Pre-download all runtime dependency wheels (with transitive deps) into vendor/.
-	python3 -m pip download \
+	# Must use python3.13 explicitly so compiled wheels (e.g. pydantic-core)
+	# are fetched for the correct ABI that the target system will use.
+	python3.13 -m pip download \
 	    fastapi==0.111.0 \
 	    "uvicorn[standard]==0.29.0" \
 	    pydantic==2.7.1 \
