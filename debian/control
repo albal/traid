@@ -1,0 +1,22 @@
+Source: traid
+Section: admin
+Priority: optional
+Maintainer: TRAID <traid@localhost>
+Build-Depends: debhelper-compat (= 13)
+Standards-Version: 4.7.4.1
+Rules-Requires-Root: no
+
+Package: traid
+Architecture: any
+Depends: ${misc:Depends},
+ python3.11,
+ python3.11-venv,
+ mdadm,
+ lvm2,
+ parted
+Description: TSEW RAID Web Appliance Manager
+ Secure, lightweight storage management appliance implementing TRAID
+ (TSEW RAID). Uses a split-privilege architecture: an unprivileged
+ FastAPI/Uvicorn web interface communicates over a Unix socket with a
+ privileged worker daemon that executes mdadm, lvm, and parted to
+ manage mismatched drives using a tier-slicing algorithm.

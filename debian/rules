@@ -1,0 +1,35 @@
+#!/usr/bin/make -f
+
+INSTALL_DIR = /usr/lib/traid
+PKG_DIR     = $(CURDIR)/debian/traid
+
+%:
+	dh $@
+
+override_dh_auto_build:
+	# Python source only — nothing to compile.
+
+override_dh_auto_install:
+	install -d $(PKG_DIR)$(INSTALL_DIR)
+	cp -r api worker shared static requirements.txt $(PKG_DIR)$(INSTALL_DIR)/
+	# Include pre-downloaded wheels when present (added by CI before build).
+	[ -d vendor ] && cp -r vendor $(PKG_DIR)$(INSTALL_DIR)/ || true
+
+	# Install systemd units, rewriting dev paths to installed paths.
+	install -d $(PKG_DIR)/usr/lib/systemd/system
+	sed \
+	    -e 's|/home/al/TRAID/venv|$(INSTALL_DIR)/venv|g' \
+	    -e 's|WorkingDirectory=.*|WorkingDirectory=$(INSTALL_DIR)|g' \
+	    systemd/hybrid-worker.service \
+	    > $(PKG_DIR)/usr/lib/systemd/system/hybrid-worker.service
+	sed \
+	    -e 's|/home/al/TRAID/venv|$(INSTALL_DIR)/venv|g' \
+	    -e 's|WorkingDirectory=.*|WorkingDirectory=$(INSTALL_DIR)|g' \
+	    systemd/hybrid-web.service \
+	    > $(PKG_DIR)/usr/lib/systemd/system/hybrid-web.service
+
+override_dh_auto_test:
+	# Tests require a running worker daemon — skip during package build.
+
+override_dh_installsystemd:
+	# Service lifecycle is managed in postinst/prerm.

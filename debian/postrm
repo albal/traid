@@ -1,0 +1,21 @@
+#!/bin/sh
+set -e
+
+case "$1" in
+    remove)
+        if [ -d /run/systemd/system ]; then
+            systemctl disable hybrid-worker.service hybrid-web.service || true
+            systemctl daemon-reload || true
+        fi
+        ;;
+    purge)
+        # Remove generated venv (source files are handled by dpkg).
+        rm -rf /usr/lib/traid/venv
+        if [ -d /run/systemd/system ]; then
+            systemctl daemon-reload || true
+        fi
+        ;;
+esac
+
+#DEBHELPER#
+exit 0

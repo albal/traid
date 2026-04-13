@@ -1,0 +1,71 @@
+name: Build Debian Package
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container:
+      image: debian:trixie
+
+    steps:
+      - name: Install build dependencies
+        run: |
+          apt-get update -qq
+          apt-get install -y --no-install-recommends \
+            git ca-certificates \
+            dpkg-dev debhelper \
+            python3.11 python3.11-venv python3-pip \
+            lintian
+
+      - uses: actions/checkout@v4
+
+      - name: Vendor Python dependencies
+        run: |
+          python3.11 -m pip download \
+            -r requirements.txt \
+            -d vendor/ \
+            --quiet
+
+      - name: Build package
+        run: |
+          chmod +x debian/rules
+          dpkg-buildpackage -us -uc -b
+          # dpkg-buildpackage writes output one level up — bring it in.
+          cp ../*.deb .
+
+      - name: Lint package
+        # Informational only — non-zero exit does not fail the build.
+        run: lintian --no-tag-display-limit *.deb || true
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: traid-deb
+          path: '*.deb'
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: traid-deb
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: '*.deb'
+          generate_release_notes: true

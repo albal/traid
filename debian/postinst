@@ -1,0 +1,47 @@
+#!/bin/sh
+set -e
+
+TRAID_DIR=/usr/lib/traid
+
+case "$1" in
+    configure|reconfigure)
+        # (Re)create the Python venv. Safe to run on upgrade — venv is
+        # regenerated from scratch so stale bytecode is never an issue.
+        python3.11 -m venv "$TRAID_DIR/venv"
+
+        if [ -d "$TRAID_DIR/vendor" ]; then
+            # Offline install from vendored wheels bundled in the package.
+            "$TRAID_DIR/venv/bin/pip" install \
+                --no-index \
+                --find-links "$TRAID_DIR/vendor" \
+                -r "$TRAID_DIR/requirements.txt" \
+                --quiet
+        else
+            # Fallback: install from PyPI (requires network on target).
+            "$TRAID_DIR/venv/bin/pip" install \
+                -r "$TRAID_DIR/requirements.txt" \
+                --quiet
+        fi
+
+        # Reload unit files (handles both fresh install and upgrade).
+        if [ -d /run/systemd/system ]; then
+            systemctl daemon-reload
+
+            systemctl enable hybrid-worker.service hybrid-web.service
+
+            # Restart if already running (upgrade), otherwise start fresh.
+            if systemctl is-active --quiet hybrid-worker.service; then
+                systemctl restart hybrid-worker.service
+                systemctl restart hybrid-web.service
+            else
+                systemctl start hybrid-worker.service
+                # Give the worker a moment to bind the socket.
+                sleep 1
+                systemctl start hybrid-web.service || true
+            fi
+        fi
+        ;;
+esac
+
+#DEBHELPER#
+exit 0
