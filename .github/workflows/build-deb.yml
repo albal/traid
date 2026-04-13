@@ -27,6 +27,21 @@ jobs:
 
       - uses: actions/checkout@v6
 
+      - name: Set version from tag
+        run: |
+          # Strip the leading 'v' from the tag; fall back to 0.0.0 for branch/PR builds.
+          if echo "$GITHUB_REF" | grep -q '^refs/tags/v'; then
+            VERSION=$(echo "$GITHUB_REF" | sed 's|refs/tags/v||')
+          else
+            VERSION=0.0.0
+          fi
+          echo "Stamping version: $VERSION"
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          # Patch pyproject.toml so the wheel filename carries the right version.
+          sed -i "s/^version = .*/version = \"$VERSION\"/" pyproject.toml
+          # Patch debian/changelog so dpkg-buildpackage picks up the right version.
+          sed -i "1s/(.*)/($VERSION-1)/" debian/changelog
+
       - name: Build package
         run: |
           chmod +x debian/rules
