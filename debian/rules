@@ -25,18 +25,10 @@ override_dh_auto_install:
 	cp vendor/*.whl $(PKG_DIR)$(INSTALL_DIR)/vendor/
 	cp -r static $(PKG_DIR)$(INSTALL_DIR)/
 
-	# Install systemd units, rewriting dev paths to installed paths.
+	# Install systemd units (already reference /usr/lib/traid directly).
 	install -d $(PKG_DIR)/usr/lib/systemd/system
-	sed \
-	    -e 's|/home/al/TRAID/venv|$(INSTALL_DIR)/venv|g' \
-	    -e 's|WorkingDirectory=.*|WorkingDirectory=$(INSTALL_DIR)|g' \
-	    systemd/traid-worker.service \
-	    > $(PKG_DIR)/usr/lib/systemd/system/traid-worker.service
-	sed \
-	    -e 's|/home/al/TRAID/venv|$(INSTALL_DIR)/venv|g' \
-	    -e 's|WorkingDirectory=.*|WorkingDirectory=$(INSTALL_DIR)|g' \
-	    systemd/traid-web.service \
-	    > $(PKG_DIR)/usr/lib/systemd/system/traid-web.service
+	cp systemd/traid-worker.service $(PKG_DIR)/usr/lib/systemd/system/
+	cp systemd/traid-web.service    $(PKG_DIR)/usr/lib/systemd/system/
 
 override_dh_auto_test:
 	# Tests require a running worker daemon — skip during package build.
