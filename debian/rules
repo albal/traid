@@ -23,7 +23,14 @@ override_dh_auto_build:
 override_dh_auto_install:
 	install -d $(PKG_DIR)$(INSTALL_DIR)/vendor
 	cp vendor/*.whl $(PKG_DIR)$(INSTALL_DIR)/vendor/
-	cp -r static $(PKG_DIR)$(INSTALL_DIR)/
+
+	# Static files served by lighttpd from /usr/share/traid.
+	install -d $(PKG_DIR)/usr/share/traid
+	cp -r static/. $(PKG_DIR)/usr/share/traid/
+
+	# lighttpd site configuration.
+	install -d $(PKG_DIR)/etc/lighttpd/conf-available
+	install -m 0644 lighttpd/traid.conf $(PKG_DIR)/etc/lighttpd/conf-available/traid.conf
 
 	# Install systemd units (already reference /usr/lib/traid directly).
 	install -d $(PKG_DIR)/usr/lib/systemd/system

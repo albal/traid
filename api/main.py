@@ -14,8 +14,6 @@ from contextlib import asynccontextmanager
 from typing import Annotated
 
 from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
-from fastapi.responses import RedirectResponse
-from fastapi.staticfiles import StaticFiles
 from pythonjsonlogger import jsonlogger
 
 from api import uds_client
@@ -70,11 +68,6 @@ def _worker_error_to_http(exc: uds_client.WorkerError) -> HTTPException:
 # ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
-
-@app.get("/")
-async def root():
-    return RedirectResponse(url="/static/index.html")
-
 
 @app.get("/api/disks", response_model=list[DiskInfo])
 async def get_disks():
@@ -175,8 +168,3 @@ async def ws_progress(websocket: WebSocket):
         ws_manager.disconnect(websocket)
 
 
-# ---------------------------------------------------------------------------
-# Static files (must be last — catch-all)
-# ---------------------------------------------------------------------------
-
-app.mount("/static", StaticFiles(directory="static"), name="static")

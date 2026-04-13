@@ -16,6 +16,14 @@ case "$1" in
             traid \
             --quiet
 
+        # Enable lighttpd site configuration.
+        if command -v lighty-enable-mod >/dev/null 2>&1; then
+            lighty-enable-mod traid || true
+            if [ -d /run/systemd/system ]; then
+                systemctl reload-or-restart lighttpd.service || true
+            fi
+        fi
+
         # Reload unit files (handles both fresh install and upgrade).
         if [ -d /run/systemd/system ]; then
             systemctl daemon-reload

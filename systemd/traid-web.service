@@ -1,6 +1,6 @@
 [Unit]
 Description=TRAID Web API (Uvicorn/FastAPI)
-Documentation=https://github.com/your-org/traid
+Documentation=https://github.com/albal/traid
 After=network.target traid-worker.service
 Requires=traid-worker.service
 

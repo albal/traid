@@ -15,7 +15,8 @@ Depends: ${misc:Depends},
  python3.13-venv,
  mdadm,
  lvm2,
- parted
+ parted,
+ lighttpd
 Description: TSEW RAID Web Appliance Manager
  Secure, lightweight storage management appliance implementing TRAID
  (TSEW RAID). Uses a split-privilege architecture: an unprivileged

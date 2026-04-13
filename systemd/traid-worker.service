@@ -1,6 +1,6 @@
 [Unit]
 Description=TRAID Privileged Worker Daemon
-Documentation=https://github.com/your-org/traid
+Documentation=https://github.com/albal/traid
 After=network.target
 
 [Service]
