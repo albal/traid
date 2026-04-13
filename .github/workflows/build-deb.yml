@@ -25,7 +25,7 @@ jobs:
             python3.13 python3.13-venv python3-pip \
             lintian
 
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
 
       - name: Vendor Python dependencies
         run: |
@@ -46,7 +46,7 @@ jobs:
         run: lintian --no-tag-display-limit *.deb || true
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: traid-deb
           path: '*.deb'
@@ -61,7 +61,7 @@ jobs:
 
     steps:
       - name: Download artifact
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v8
         with:
           name: traid-deb
 
