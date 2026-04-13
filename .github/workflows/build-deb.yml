@@ -22,17 +22,10 @@ jobs:
             build-essential \
             git ca-certificates \
             dpkg-dev debhelper \
-            python3.13 python3.13-venv python3-pip \
+            python3.13 python3.13-venv python3-pip python3-setuptools \
             lintian
 
       - uses: actions/checkout@v6
-
-      - name: Vendor Python dependencies
-        run: |
-          python3.13 -m pip download \
-            -r requirements.txt \
-            -d vendor/ \
-            --quiet
 
       - name: Build package
         run: |
