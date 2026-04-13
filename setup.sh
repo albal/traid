@@ -60,17 +60,17 @@ fi
 # ---------------------------------------------------------------------------
 
 echo "==> Installing systemd units..."
-cp "$TRAID_DIR/systemd/hybrid-worker.service" /etc/systemd/system/
-cp "$TRAID_DIR/systemd/hybrid-web.service" /etc/systemd/system/
+cp "$TRAID_DIR/systemd/traid-worker.service" /etc/systemd/system/
+cp "$TRAID_DIR/systemd/traid-web.service" /etc/systemd/system/
 systemctl daemon-reload
 
 echo "==> Enabling and starting services..."
-systemctl enable hybrid-worker hybrid-web
-systemctl start hybrid-worker
+systemctl enable traid-worker traid-web
+systemctl start traid-worker
 
 # Give the worker a moment to bind the socket before starting the web service
 sleep 2
-systemctl start hybrid-web
+systemctl start traid-web
 
 # ---------------------------------------------------------------------------
 # Status
@@ -79,8 +79,8 @@ systemctl start hybrid-web
 echo ""
 echo "==> Installation complete."
 echo ""
-systemctl status hybrid-worker --no-pager --lines=5 || true
+systemctl status traid-worker --no-pager --lines=5 || true
 echo ""
-systemctl status hybrid-web --no-pager --lines=5 || true
+systemctl status traid-web --no-pager --lines=5 || true
 echo ""
 echo "TRAID is available at: http://localhost:8000"

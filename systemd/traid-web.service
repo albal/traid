@@ -1,8 +1,8 @@
 [Unit]
 Description=TRAID Web API (Uvicorn/FastAPI)
 Documentation=https://github.com/your-org/traid
-After=network.target hybrid-worker.service
-Requires=hybrid-worker.service
+After=network.target traid-worker.service
+Requires=traid-worker.service
 
 [Service]
 Type=simple

@@ -31,7 +31,7 @@ from worker.mdstat_reader import MdstatReader
 from worker.traid_algorithm import capacity_preview, calculate_traid
 from worker.traid_algorithm import generate_parted_commands, generate_mdadm_commands, generate_lvm_commands
 
-SOCKET_PATH = Path("/run/hybrid-storage.sock")
+SOCKET_PATH = Path("/run/traid.sock")
 SOCKET_GROUP = "www-data"
 
 

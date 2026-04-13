@@ -4,8 +4,8 @@ set -e
 case "$1" in
     remove|upgrade|deconfigure)
         if [ -d /run/systemd/system ]; then
-            systemctl stop hybrid-web.service    || true
-            systemctl stop hybrid-worker.service || true
+            systemctl stop traid-web.service    || true
+            systemctl stop traid-worker.service || true
         fi
         ;;
     failed-upgrade)

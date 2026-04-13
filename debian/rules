@@ -30,13 +30,13 @@ override_dh_auto_install:
 	sed \
 	    -e 's|/home/al/TRAID/venv|$(INSTALL_DIR)/venv|g' \
 	    -e 's|WorkingDirectory=.*|WorkingDirectory=$(INSTALL_DIR)|g' \
-	    systemd/hybrid-worker.service \
-	    > $(PKG_DIR)/usr/lib/systemd/system/hybrid-worker.service
+	    systemd/traid-worker.service \
+	    > $(PKG_DIR)/usr/lib/systemd/system/traid-worker.service
 	sed \
 	    -e 's|/home/al/TRAID/venv|$(INSTALL_DIR)/venv|g' \
 	    -e 's|WorkingDirectory=.*|WorkingDirectory=$(INSTALL_DIR)|g' \
-	    systemd/hybrid-web.service \
-	    > $(PKG_DIR)/usr/lib/systemd/system/hybrid-web.service
+	    systemd/traid-web.service \
+	    > $(PKG_DIR)/usr/lib/systemd/system/traid-web.service
 
 override_dh_auto_test:
 	# Tests require a running worker daemon — skip during package build.

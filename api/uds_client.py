@@ -14,7 +14,7 @@ from shared.protocol import send_message, recv_message, ProtocolError
 
 logger = logging.getLogger(__name__)
 
-SOCKET_PATH = "/run/hybrid-storage.sock"
+SOCKET_PATH = "/run/traid.sock"
 DEFAULT_TIMEOUT = 30.0  # seconds
 
 
