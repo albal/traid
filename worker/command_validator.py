@@ -9,6 +9,15 @@ asyncio.create_subprocess_exec, so no shell interpolation is possible.
 import re
 from typing import Any
 
+# Subvolume / snapshot relative paths: no shell metacharacters, no ..
+_SUBVOL_PATH_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_./@-]{0,254}$")
+# Filesystem label
+_FS_LABEL_RE = re.compile(r"^[a-zA-Z0-9_.+-]{0,255}$")
+# Filename for btrfs send streams: UUID-style or simple name, no path separators
+_STREAM_FILE_RE = re.compile(r"^[a-zA-Z0-9_.@-]{1,200}\.btrfs$")
+# Btrfs qgroup ID (e.g. "0/256")
+_QGROUP_RE = re.compile(r"^\d+/\d+$")
+
 # Block device paths: traditional (sda/vda/xvda) and NVMe (nvme0n1/nvme0n1p1)
 _DEV_PATH_RE = re.compile(
     r"^/dev/(?:"
@@ -133,6 +142,40 @@ _ALLOWED_ACTIONS: dict[str, dict] = {
     "smart_test":        {"required": ["disk", "test_type"], "optional": []},
     "badblocks_test":    {"required": ["disk"], "optional": []},
     "disk_erase":        {"required": ["disk"], "optional": ["mode"]},
+    # ---- filesystem management ----
+    "fs_format":         {"required": ["vg_name", "fstype"], "optional": ["label", "compression"]},
+    "fs_mount":          {"required": ["vg_name"], "optional": []},
+    "fs_unmount":        {"required": ["vg_name"], "optional": []},
+    "fs_info":           {"required": ["vg_name"], "optional": []},
+    "fs_set_compression":{"required": ["vg_name", "compression"], "optional": []},
+    # ---- btrfs subvolumes / snapshots ----
+    "btrfs_subvol_list":    {"required": ["vg_name"], "optional": []},
+    "btrfs_subvol_create":  {"required": ["vg_name", "name"], "optional": []},
+    "btrfs_subvol_delete":  {"required": ["vg_name", "path"], "optional": ["recursive"]},
+    "btrfs_snapshot_create":{"required": ["vg_name", "source_path", "dest_path"],
+                              "optional": ["readonly"]},
+    "btrfs_subvol_set_default": {"required": ["vg_name", "subvol_id"], "optional": []},
+    # ---- btrfs maintenance ----
+    "btrfs_scrub_start":    {"required": ["vg_name"], "optional": []},
+    "btrfs_scrub_status":   {"required": ["vg_name"], "optional": []},
+    "btrfs_scrub_cancel":   {"required": ["vg_name"], "optional": []},
+    "btrfs_balance_start":  {"required": ["vg_name"],
+                              "optional": ["usage_filter", "metadata_usage"]},
+    "btrfs_balance_status": {"required": ["vg_name"], "optional": []},
+    "btrfs_balance_cancel": {"required": ["vg_name"], "optional": []},
+    "btrfs_defrag":         {"required": ["vg_name"],
+                              "optional": ["path", "recursive", "compression"]},
+    "btrfs_dedup":          {"required": ["vg_name"], "optional": ["path"]},
+    # ---- btrfs quotas ----
+    "btrfs_quota_enable":   {"required": ["vg_name"], "optional": []},
+    "btrfs_quota_list":     {"required": ["vg_name"], "optional": []},
+    "btrfs_quota_set":      {"required": ["vg_name", "qgroup", "limit_bytes"], "optional": []},
+    # ---- btrfs usage / stats ----
+    "btrfs_usage_detail":   {"required": ["vg_name"], "optional": []},
+    # ---- btrfs send / receive ----
+    "btrfs_send":           {"required": ["vg_name", "snapshot_path", "dest_file"],
+                              "optional": ["parent_path"]},
+    "btrfs_receive":        {"required": ["vg_name", "source_file"], "optional": []},
 }
 
 
@@ -243,5 +286,148 @@ def validate_request(payload: dict) -> tuple[str, dict]:
             if raw_params["mode"] not in allowed_modes:
                 raise ValidationError(f"mode: must be one of {sorted(allowed_modes)}")
             validated["mode"] = raw_params["mode"]
+
+    # ---- filesystem management ----
+    elif action == "fs_format":
+        validated["vg_name"] = _validate_vg_name(raw_params["vg_name"], "vg_name")
+        fstype = raw_params["fstype"]
+        if fstype not in ("ext4", "btrfs"):
+            raise ValidationError("fstype: must be 'ext4' or 'btrfs'")
+        validated["fstype"] = fstype
+        if "label" in raw_params:
+            label = raw_params["label"]
+            if not isinstance(label, str) or not _FS_LABEL_RE.match(label):
+                raise ValidationError("label: invalid filesystem label")
+            validated["label"] = label
+        if "compression" in raw_params:
+            comp = raw_params["compression"]
+            if comp not in ("zstd", "lzo", "zlib", "none", ""):
+                raise ValidationError("compression: must be zstd, lzo, zlib, none, or ''")
+            validated["compression"] = comp
+
+    elif action in ("fs_mount", "fs_unmount", "fs_info",
+                    "btrfs_subvol_list", "btrfs_scrub_start", "btrfs_scrub_status",
+                    "btrfs_scrub_cancel", "btrfs_balance_status", "btrfs_balance_cancel",
+                    "btrfs_quota_enable", "btrfs_quota_list", "btrfs_usage_detail"):
+        validated["vg_name"] = _validate_vg_name(raw_params["vg_name"], "vg_name")
+
+    elif action == "fs_set_compression":
+        validated["vg_name"] = _validate_vg_name(raw_params["vg_name"], "vg_name")
+        comp = raw_params["compression"]
+        if comp not in ("zstd", "lzo", "zlib", "none", ""):
+            raise ValidationError("compression: must be zstd, lzo, zlib, none, or ''")
+        validated["compression"] = comp
+
+    elif action == "btrfs_subvol_create":
+        validated["vg_name"] = _validate_vg_name(raw_params["vg_name"], "vg_name")
+        name = raw_params["name"]
+        if not isinstance(name, str) or not _SUBVOL_PATH_RE.match(name):
+            raise ValidationError("name: invalid subvolume name")
+        if ".." in name.split("/"):
+            raise ValidationError("name: path traversal not allowed")
+        validated["name"] = name
+
+    elif action == "btrfs_subvol_delete":
+        validated["vg_name"] = _validate_vg_name(raw_params["vg_name"], "vg_name")
+        path = raw_params["path"]
+        if not isinstance(path, str) or not _SUBVOL_PATH_RE.match(path):
+            raise ValidationError("path: invalid subvolume path")
+        if ".." in path.split("/"):
+            raise ValidationError("path: path traversal not allowed")
+        validated["path"] = path
+        if "recursive" in raw_params:
+            validated["recursive"] = bool(raw_params["recursive"])
+
+    elif action == "btrfs_snapshot_create":
+        validated["vg_name"] = _validate_vg_name(raw_params["vg_name"], "vg_name")
+        for field in ("source_path", "dest_path"):
+            v = raw_params[field]
+            if not isinstance(v, str) or not _SUBVOL_PATH_RE.match(v):
+                raise ValidationError(f"{field}: invalid subvolume path")
+            if ".." in v.split("/"):
+                raise ValidationError(f"{field}: path traversal not allowed")
+            validated[field] = v
+        if "readonly" in raw_params:
+            validated["readonly"] = bool(raw_params["readonly"])
+
+    elif action == "btrfs_subvol_set_default":
+        validated["vg_name"] = _validate_vg_name(raw_params["vg_name"], "vg_name")
+        subvol_id = raw_params["subvol_id"]
+        if not isinstance(subvol_id, int) or subvol_id < 0:
+            raise ValidationError("subvol_id: must be a non-negative integer")
+        validated["subvol_id"] = subvol_id
+
+    elif action == "btrfs_balance_start":
+        validated["vg_name"] = _validate_vg_name(raw_params["vg_name"], "vg_name")
+        for field in ("usage_filter", "metadata_usage"):
+            if field in raw_params:
+                v = raw_params[field]
+                if not isinstance(v, int) or not (0 <= v <= 100):
+                    raise ValidationError(f"{field}: must be 0-100")
+                validated[field] = v
+
+    elif action == "btrfs_defrag":
+        validated["vg_name"] = _validate_vg_name(raw_params["vg_name"], "vg_name")
+        if "path" in raw_params:
+            path = raw_params["path"]
+            if not isinstance(path, str) or not _SUBVOL_PATH_RE.match(path):
+                raise ValidationError("path: invalid path")
+            if ".." in path.split("/"):
+                raise ValidationError("path: path traversal not allowed")
+            validated["path"] = path
+        if "recursive" in raw_params:
+            validated["recursive"] = bool(raw_params["recursive"])
+        if "compression" in raw_params:
+            comp = raw_params["compression"]
+            if comp not in ("zstd", "lzo", "zlib", "none", ""):
+                raise ValidationError("compression: invalid value")
+            validated["compression"] = comp
+
+    elif action == "btrfs_dedup":
+        validated["vg_name"] = _validate_vg_name(raw_params["vg_name"], "vg_name")
+        if "path" in raw_params:
+            path = raw_params["path"]
+            if not isinstance(path, str) or not _SUBVOL_PATH_RE.match(path):
+                raise ValidationError("path: invalid path")
+            validated["path"] = path
+
+    elif action == "btrfs_quota_set":
+        validated["vg_name"] = _validate_vg_name(raw_params["vg_name"], "vg_name")
+        qgroup = raw_params["qgroup"]
+        if not isinstance(qgroup, str) or not _QGROUP_RE.match(qgroup):
+            raise ValidationError("qgroup: must match N/N format")
+        validated["qgroup"] = qgroup
+        limit = raw_params["limit_bytes"]
+        if not isinstance(limit, int) or limit < 0:
+            raise ValidationError("limit_bytes: must be a non-negative integer")
+        validated["limit_bytes"] = limit
+
+    elif action == "btrfs_send":
+        validated["vg_name"] = _validate_vg_name(raw_params["vg_name"], "vg_name")
+        for field in ("snapshot_path",):
+            v = raw_params[field]
+            if not isinstance(v, str) or not _SUBVOL_PATH_RE.match(v):
+                raise ValidationError(f"{field}: invalid path")
+            if ".." in v.split("/"):
+                raise ValidationError(f"{field}: path traversal not allowed")
+            validated[field] = v
+        dest_file = raw_params["dest_file"]
+        if not isinstance(dest_file, str) or not _STREAM_FILE_RE.match(dest_file):
+            raise ValidationError("dest_file: must be a .btrfs filename")
+        validated["dest_file"] = dest_file
+        if "parent_path" in raw_params:
+            p = raw_params["parent_path"]
+            if not isinstance(p, str) or not _SUBVOL_PATH_RE.match(p):
+                raise ValidationError("parent_path: invalid path")
+            if ".." in p.split("/"):
+                raise ValidationError("parent_path: path traversal not allowed")
+            validated["parent_path"] = p
+
+    elif action == "btrfs_receive":
+        validated["vg_name"] = _validate_vg_name(raw_params["vg_name"], "vg_name")
+        source_file = raw_params["source_file"]
+        if not isinstance(source_file, str) or not _STREAM_FILE_RE.match(source_file):
+            raise ValidationError("source_file: must be a .btrfs filename")
+        validated["source_file"] = source_file
 
     return action, validated

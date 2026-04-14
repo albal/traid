@@ -26,6 +26,7 @@ from pythonjsonlogger import jsonlogger
 from shared.protocol import send_message, recv_message, ProtocolError
 from worker.command_validator import validate_request, ValidationError
 from worker import disk_ops
+from worker import fs_ops
 from worker.mdstat_reader import MdstatReader
 from worker.traid_algorithm import calculate_traid
 from worker.traid_algorithm import (
@@ -485,6 +486,194 @@ async def _handle_disk_erase(params: dict) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Handlers: filesystem management
+# ---------------------------------------------------------------------------
+
+async def _handle_fs_format(params: dict) -> dict:
+    vg_name = params["vg_name"]
+    fstype = params["fstype"]
+    job_id = _new_job("fs_format", vg_name=vg_name, type="fs_format")
+    coro = fs_ops.format_volume(
+        vg_name, fstype,
+        label=params.get("label", ""),
+        compression=params.get("compression", ""),
+    )
+    if not _launch_locked(job_id, coro):
+        del _job_history[job_id]
+        return _busy_response()
+    return {"accepted": True, "job_id": job_id}
+
+
+async def _handle_fs_mount(params: dict) -> dict:
+    return await fs_ops.mount_volume(params["vg_name"])
+
+
+async def _handle_fs_unmount(params: dict) -> dict:
+    return await fs_ops.unmount_volume(params["vg_name"])
+
+
+async def _handle_fs_info(params: dict) -> dict:
+    return await fs_ops.get_fs_info(params["vg_name"])
+
+
+async def _handle_fs_set_compression(params: dict) -> dict:
+    return await fs_ops.btrfs_set_compression(params["vg_name"], params["compression"])
+
+
+# ---------------------------------------------------------------------------
+# Handlers: btrfs subvolumes / snapshots
+# ---------------------------------------------------------------------------
+
+async def _handle_btrfs_subvol_list(params: dict) -> dict:
+    subvols = await fs_ops.btrfs_list_subvolumes(params["vg_name"])
+    return {"subvolumes": subvols}
+
+
+async def _handle_btrfs_subvol_create(params: dict) -> dict:
+    return await fs_ops.btrfs_create_subvolume(params["vg_name"], params["name"])
+
+
+async def _handle_btrfs_subvol_delete(params: dict) -> dict:
+    return await fs_ops.btrfs_delete_subvolume(
+        params["vg_name"], params["path"],
+        recursive=params.get("recursive", False),
+    )
+
+
+async def _handle_btrfs_snapshot_create(params: dict) -> dict:
+    return await fs_ops.btrfs_create_snapshot(
+        params["vg_name"], params["source_path"], params["dest_path"],
+        readonly=params.get("readonly", False),
+    )
+
+
+async def _handle_btrfs_subvol_set_default(params: dict) -> dict:
+    return await fs_ops.btrfs_set_default_subvolume(
+        params["vg_name"], params["subvol_id"]
+    )
+
+
+# ---------------------------------------------------------------------------
+# Handlers: btrfs maintenance (scrub / balance / defrag / dedup)
+# ---------------------------------------------------------------------------
+
+async def _handle_btrfs_scrub_start(params: dict) -> dict:
+    vg_name = params["vg_name"]
+    job_id = _new_job("btrfs_scrub", vg_name=vg_name, type="btrfs_scrub")
+    coro = fs_ops.btrfs_scrub_start(vg_name, _make_updater(job_id))
+    _launch_free(job_id, coro)
+    return {"accepted": True, "job_id": job_id}
+
+
+async def _handle_btrfs_scrub_status(params: dict) -> dict:
+    return await fs_ops.btrfs_scrub_status(params["vg_name"])
+
+
+async def _handle_btrfs_scrub_cancel(params: dict) -> dict:
+    return await fs_ops.btrfs_scrub_cancel(params["vg_name"])
+
+
+async def _handle_btrfs_balance_start(params: dict) -> dict:
+    vg_name = params["vg_name"]
+    job_id = _new_job("btrfs_balance", vg_name=vg_name, type="btrfs_balance")
+    coro = fs_ops.btrfs_balance_start(
+        vg_name,
+        usage_filter=params.get("usage_filter"),
+        metadata_usage=params.get("metadata_usage"),
+        update_fn=_make_updater(job_id),
+    )
+    _launch_free(job_id, coro)
+    return {"accepted": True, "job_id": job_id}
+
+
+async def _handle_btrfs_balance_status(params: dict) -> dict:
+    return await fs_ops.btrfs_balance_status(params["vg_name"])
+
+
+async def _handle_btrfs_balance_cancel(params: dict) -> dict:
+    return await fs_ops.btrfs_balance_cancel(params["vg_name"])
+
+
+async def _handle_btrfs_defrag(params: dict) -> dict:
+    vg_name = params["vg_name"]
+    job_id = _new_job("btrfs_defrag", vg_name=vg_name, type="btrfs_defrag")
+    coro = fs_ops.btrfs_defrag(
+        vg_name,
+        path=params.get("path", ""),
+        recursive=params.get("recursive", True),
+        compression=params.get("compression", ""),
+        update_fn=_make_updater(job_id),
+    )
+    _launch_free(job_id, coro)
+    return {"accepted": True, "job_id": job_id}
+
+
+async def _handle_btrfs_dedup(params: dict) -> dict:
+    vg_name = params["vg_name"]
+    job_id = _new_job("btrfs_dedup", vg_name=vg_name, type="btrfs_dedup")
+    coro = fs_ops.btrfs_dedup(
+        vg_name, path=params.get("path", ""), update_fn=_make_updater(job_id)
+    )
+    _launch_free(job_id, coro)
+    return {"accepted": True, "job_id": job_id}
+
+
+# ---------------------------------------------------------------------------
+# Handlers: btrfs quotas
+# ---------------------------------------------------------------------------
+
+async def _handle_btrfs_quota_enable(params: dict) -> dict:
+    return await fs_ops.btrfs_quota_enable(params["vg_name"])
+
+
+async def _handle_btrfs_quota_list(params: dict) -> dict:
+    quotas = await fs_ops.btrfs_quota_list(params["vg_name"])
+    return {"quotas": quotas}
+
+
+async def _handle_btrfs_quota_set(params: dict) -> dict:
+    return await fs_ops.btrfs_quota_set(
+        params["vg_name"], params["qgroup"], params["limit_bytes"]
+    )
+
+
+# ---------------------------------------------------------------------------
+# Handlers: btrfs usage / stats
+# ---------------------------------------------------------------------------
+
+async def _handle_btrfs_usage_detail(params: dict) -> dict:
+    return await fs_ops.btrfs_usage_detail(params["vg_name"])
+
+
+# ---------------------------------------------------------------------------
+# Handlers: btrfs send / receive
+# ---------------------------------------------------------------------------
+
+async def _handle_btrfs_send(params: dict) -> dict:
+    vg_name = params["vg_name"]
+    job_id = _new_job("btrfs_send", vg_name=vg_name, type="btrfs_send")
+    coro = fs_ops.btrfs_send(
+        vg_name,
+        snapshot_path=params["snapshot_path"],
+        dest_file=params["dest_file"],
+        parent_path=params.get("parent_path"),
+        update_fn=_make_updater(job_id),
+    )
+    _launch_free(job_id, coro)
+    return {"accepted": True, "job_id": job_id}
+
+
+async def _handle_btrfs_receive(params: dict) -> dict:
+    vg_name = params["vg_name"]
+    job_id = _new_job("btrfs_receive", vg_name=vg_name, type="btrfs_receive")
+    coro = fs_ops.btrfs_receive(
+        vg_name, source_file=params["source_file"], update_fn=_make_updater(job_id)
+    )
+    _launch_free(job_id, coro)
+    return {"accepted": True, "job_id": job_id}
+
+
+# ---------------------------------------------------------------------------
 # Dispatcher
 # ---------------------------------------------------------------------------
 
@@ -507,6 +696,36 @@ _HANDLERS = {
     "smart_test":      _handle_smart_test,
     "badblocks_test":  _handle_badblocks_test,
     "disk_erase":      _handle_disk_erase,
+    # filesystem management
+    "fs_format":              _handle_fs_format,
+    "fs_mount":               _handle_fs_mount,
+    "fs_unmount":             _handle_fs_unmount,
+    "fs_info":                _handle_fs_info,
+    "fs_set_compression":     _handle_fs_set_compression,
+    # btrfs subvolumes / snapshots
+    "btrfs_subvol_list":      _handle_btrfs_subvol_list,
+    "btrfs_subvol_create":    _handle_btrfs_subvol_create,
+    "btrfs_subvol_delete":    _handle_btrfs_subvol_delete,
+    "btrfs_snapshot_create":  _handle_btrfs_snapshot_create,
+    "btrfs_subvol_set_default": _handle_btrfs_subvol_set_default,
+    # btrfs maintenance
+    "btrfs_scrub_start":      _handle_btrfs_scrub_start,
+    "btrfs_scrub_status":     _handle_btrfs_scrub_status,
+    "btrfs_scrub_cancel":     _handle_btrfs_scrub_cancel,
+    "btrfs_balance_start":    _handle_btrfs_balance_start,
+    "btrfs_balance_status":   _handle_btrfs_balance_status,
+    "btrfs_balance_cancel":   _handle_btrfs_balance_cancel,
+    "btrfs_defrag":           _handle_btrfs_defrag,
+    "btrfs_dedup":            _handle_btrfs_dedup,
+    # btrfs quotas
+    "btrfs_quota_enable":     _handle_btrfs_quota_enable,
+    "btrfs_quota_list":       _handle_btrfs_quota_list,
+    "btrfs_quota_set":        _handle_btrfs_quota_set,
+    # btrfs usage / stats
+    "btrfs_usage_detail":     _handle_btrfs_usage_detail,
+    # btrfs send / receive
+    "btrfs_send":             _handle_btrfs_send,
+    "btrfs_receive":          _handle_btrfs_receive,
 }
 
 
@@ -583,6 +802,8 @@ async def main() -> None:
         SOCKET_PATH.unlink()
 
     REPORT_DIR.mkdir(parents=True, exist_ok=True)
+
+    await fs_ops.remount_all()
 
     server = await asyncio.start_unix_server(_handle_client, path=str(SOCKET_PATH))
 

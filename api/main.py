@@ -23,11 +23,21 @@ from api.models import (
     ArrayCreationRequest,
     BackupRequest,
     BadblocksRequest,
+    BtrfsBalanceRequest,
+    BtrfsDefragRequest,
+    BtrfsQuotaSetRequest,
+    BtrfsReceiveRequest,
+    BtrfsSendRequest,
+    BtrfsSnapshotRequest,
+    BtrfsSubvolCreateRequest,
+    BtrfsSubvolDeleteRequest,
     CapacityPreview,
     CloneRequest,
+    CompressionRequest,
     CreateAccepted,
     DiskInfo,
     EraseRequest,
+    FormatRequest,
     GrowRequest,
     JobAccepted,
     MigrateRequest,
@@ -370,6 +380,242 @@ async def delete_job(job_id: str):
         return await uds_client.send_request("job_delete", {"job_id": job_id})
     except uds_client.WorkerUnavailableError as exc:
         raise HTTPException(status_code=503, detail=str(exc))
+
+
+# ---------------------------------------------------------------------------
+# Filesystem management routes
+# ---------------------------------------------------------------------------
+
+_VG_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_.+-]{0,126}$")
+
+
+def _check_vg(vg_name: str) -> None:
+    if not _VG_RE.match(vg_name):
+        raise HTTPException(status_code=400, detail="invalid volume group name")
+
+
+async def _fs_send(action: str, params: dict) -> dict:
+    try:
+        return await uds_client.send_request(action, params)
+    except uds_client.WorkerUnavailableError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    except uds_client.WorkerError as exc:
+        raise _worker_error_to_http(exc)
+
+
+@app.post("/api/volumes/{vg_name}/filesystem", response_model=JobAccepted, status_code=202)
+async def format_volume(vg_name: str, request: FormatRequest):
+    _check_vg(vg_name)
+    data = await _fs_send("fs_format", {
+        "vg_name": vg_name, "fstype": request.fstype,
+        "label": request.label, "compression": request.compression,
+    })
+    return _job_response(data)
+
+
+@app.post("/api/volumes/{vg_name}/filesystem/mount", status_code=200)
+async def mount_volume(vg_name: str):
+    _check_vg(vg_name)
+    return await _fs_send("fs_mount", {"vg_name": vg_name})
+
+
+@app.post("/api/volumes/{vg_name}/filesystem/unmount", status_code=200)
+async def unmount_volume(vg_name: str):
+    _check_vg(vg_name)
+    return await _fs_send("fs_unmount", {"vg_name": vg_name})
+
+
+@app.get("/api/volumes/{vg_name}/filesystem")
+async def get_fs_info(vg_name: str):
+    _check_vg(vg_name)
+    return await _fs_send("fs_info", {"vg_name": vg_name})
+
+
+@app.patch("/api/volumes/{vg_name}/filesystem/compression")
+async def set_compression(vg_name: str, request: CompressionRequest):
+    _check_vg(vg_name)
+    return await _fs_send("fs_set_compression", {
+        "vg_name": vg_name, "compression": request.compression,
+    })
+
+
+# ---------------------------------------------------------------------------
+# Btrfs — subvolumes & snapshots
+# ---------------------------------------------------------------------------
+
+@app.get("/api/volumes/{vg_name}/btrfs/subvolumes")
+async def list_subvolumes(vg_name: str):
+    _check_vg(vg_name)
+    return await _fs_send("btrfs_subvol_list", {"vg_name": vg_name})
+
+
+@app.post("/api/volumes/{vg_name}/btrfs/subvolumes", status_code=201)
+async def create_subvolume(vg_name: str, request: BtrfsSubvolCreateRequest):
+    _check_vg(vg_name)
+    return await _fs_send("btrfs_subvol_create", {"vg_name": vg_name, "name": request.name})
+
+
+@app.delete("/api/volumes/{vg_name}/btrfs/subvolumes", status_code=200)
+async def delete_subvolume(vg_name: str, request: BtrfsSubvolDeleteRequest):
+    _check_vg(vg_name)
+    return await _fs_send("btrfs_subvol_delete", {
+        "vg_name": vg_name, "path": request.path, "recursive": request.recursive,
+    })
+
+
+@app.post("/api/volumes/{vg_name}/btrfs/snapshots", status_code=201)
+async def create_snapshot(vg_name: str, request: BtrfsSnapshotRequest):
+    _check_vg(vg_name)
+    return await _fs_send("btrfs_snapshot_create", {
+        "vg_name": vg_name, "source_path": request.source_path,
+        "dest_path": request.dest_path, "readonly": request.readonly,
+    })
+
+
+@app.post("/api/volumes/{vg_name}/btrfs/default-subvolume")
+async def set_default_subvolume(vg_name: str, subvol_id: int):
+    _check_vg(vg_name)
+    return await _fs_send("btrfs_subvol_set_default", {
+        "vg_name": vg_name, "subvol_id": subvol_id,
+    })
+
+
+# ---------------------------------------------------------------------------
+# Btrfs — scrub
+# ---------------------------------------------------------------------------
+
+@app.post("/api/volumes/{vg_name}/btrfs/scrub", response_model=JobAccepted, status_code=202)
+async def start_scrub(vg_name: str):
+    _check_vg(vg_name)
+    data = await _fs_send("btrfs_scrub_start", {"vg_name": vg_name})
+    return JobAccepted(**data)
+
+
+@app.get("/api/volumes/{vg_name}/btrfs/scrub")
+async def scrub_status(vg_name: str):
+    _check_vg(vg_name)
+    return await _fs_send("btrfs_scrub_status", {"vg_name": vg_name})
+
+
+@app.delete("/api/volumes/{vg_name}/btrfs/scrub")
+async def cancel_scrub(vg_name: str):
+    _check_vg(vg_name)
+    return await _fs_send("btrfs_scrub_cancel", {"vg_name": vg_name})
+
+
+# ---------------------------------------------------------------------------
+# Btrfs — balance
+# ---------------------------------------------------------------------------
+
+@app.post("/api/volumes/{vg_name}/btrfs/balance", response_model=JobAccepted, status_code=202)
+async def start_balance(vg_name: str, request: BtrfsBalanceRequest):
+    _check_vg(vg_name)
+    params: dict = {"vg_name": vg_name}
+    if request.usage_filter is not None:
+        params["usage_filter"] = request.usage_filter
+    if request.metadata_usage is not None:
+        params["metadata_usage"] = request.metadata_usage
+    data = await _fs_send("btrfs_balance_start", params)
+    return JobAccepted(**data)
+
+
+@app.get("/api/volumes/{vg_name}/btrfs/balance")
+async def balance_status(vg_name: str):
+    _check_vg(vg_name)
+    return await _fs_send("btrfs_balance_status", {"vg_name": vg_name})
+
+
+@app.delete("/api/volumes/{vg_name}/btrfs/balance")
+async def cancel_balance(vg_name: str):
+    _check_vg(vg_name)
+    return await _fs_send("btrfs_balance_cancel", {"vg_name": vg_name})
+
+
+# ---------------------------------------------------------------------------
+# Btrfs — defrag & dedup
+# ---------------------------------------------------------------------------
+
+@app.post("/api/volumes/{vg_name}/btrfs/defrag", response_model=JobAccepted, status_code=202)
+async def start_defrag(vg_name: str, request: BtrfsDefragRequest):
+    _check_vg(vg_name)
+    params: dict = {"vg_name": vg_name, "recursive": request.recursive}
+    if request.path:
+        params["path"] = request.path
+    if request.compression:
+        params["compression"] = request.compression
+    data = await _fs_send("btrfs_defrag", params)
+    return JobAccepted(**data)
+
+
+@app.post("/api/volumes/{vg_name}/btrfs/dedup", response_model=JobAccepted, status_code=202)
+async def start_dedup(vg_name: str, path: str = ""):
+    _check_vg(vg_name)
+    params: dict = {"vg_name": vg_name}
+    if path:
+        params["path"] = path
+    data = await _fs_send("btrfs_dedup", params)
+    return JobAccepted(**data)
+
+
+# ---------------------------------------------------------------------------
+# Btrfs — quotas
+# ---------------------------------------------------------------------------
+
+@app.post("/api/volumes/{vg_name}/btrfs/quotas/enable")
+async def enable_quotas(vg_name: str):
+    _check_vg(vg_name)
+    return await _fs_send("btrfs_quota_enable", {"vg_name": vg_name})
+
+
+@app.get("/api/volumes/{vg_name}/btrfs/quotas")
+async def list_quotas(vg_name: str):
+    _check_vg(vg_name)
+    return await _fs_send("btrfs_quota_list", {"vg_name": vg_name})
+
+
+@app.post("/api/volumes/{vg_name}/btrfs/quotas")
+async def set_quota(vg_name: str, request: BtrfsQuotaSetRequest):
+    _check_vg(vg_name)
+    return await _fs_send("btrfs_quota_set", {
+        "vg_name": vg_name, "qgroup": request.qgroup, "limit_bytes": request.limit_bytes,
+    })
+
+
+# ---------------------------------------------------------------------------
+# Btrfs — usage & device stats
+# ---------------------------------------------------------------------------
+
+@app.get("/api/volumes/{vg_name}/btrfs/usage")
+async def btrfs_usage(vg_name: str):
+    _check_vg(vg_name)
+    return await _fs_send("btrfs_usage_detail", {"vg_name": vg_name})
+
+
+# ---------------------------------------------------------------------------
+# Btrfs — send / receive
+# ---------------------------------------------------------------------------
+
+@app.post("/api/volumes/{vg_name}/btrfs/send", response_model=JobAccepted, status_code=202)
+async def btrfs_send(vg_name: str, request: BtrfsSendRequest):
+    _check_vg(vg_name)
+    params: dict = {
+        "vg_name": vg_name,
+        "snapshot_path": request.snapshot_path,
+        "dest_file": request.dest_file,
+    }
+    if request.parent_path:
+        params["parent_path"] = request.parent_path
+    data = await _fs_send("btrfs_send", params)
+    return JobAccepted(**data)
+
+
+@app.post("/api/volumes/{vg_name}/btrfs/receive", response_model=JobAccepted, status_code=202)
+async def btrfs_receive(vg_name: str, request: BtrfsReceiveRequest):
+    _check_vg(vg_name)
+    data = await _fs_send("btrfs_receive", {
+        "vg_name": vg_name, "source_file": request.source_file,
+    })
+    return JobAccepted(**data)
 
 
 # ---------------------------------------------------------------------------

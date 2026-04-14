@@ -1706,14 +1706,42 @@ function traidApp() {
     },
 
     startJobPolling() {
+      // Track which job IDs were last seen as running/accepted so we can
+      // detect individual completions and refresh the right VG.
+      const prevActiveIds = new Set()
+
       const poll = async () => {
         const hadActive = this.activeJobs.length > 0
         await this.loadJobs()
         const nowActive = this.activeJobs.length > 0
+
+        // Detect jobs that just finished (were active, now complete/failed)
+        const justFinished = this.jobs.filter(j =>
+          prevActiveIds.has(j.job_id) &&
+          j.status !== 'running' && j.status !== 'accepted'
+        )
+
+        // Refresh fs info for any VG whose fs/btrfs job just completed
+        const fsJobTypes = new Set([
+          'fs_format', 'fs_mount', 'fs_unmount',
+          'btrfs_scrub', 'btrfs_balance', 'btrfs_defrag', 'btrfs_dedup',
+        ])
+        for (const job of justFinished) {
+          if (job.vg_name && fsJobTypes.has(job.type)) {
+            await this.loadFsInfo(job.vg_name)
+          }
+        }
+
+        // Full refresh when all active jobs clear
         if (hadActive && !nowActive) {
           await this.loadDisks()
           await this.loadVolumes()
         }
+
+        // Update the set for next poll
+        prevActiveIds.clear()
+        for (const j of this.activeJobs) prevActiveIds.add(j.job_id)
+
         this.jobPollTimer = setTimeout(poll, nowActive ? 2000 : 8000)
       }
       poll()

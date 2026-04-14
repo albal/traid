@@ -194,6 +194,154 @@ class CapacityPreview(BaseModel):
     raid_groups: list[RaidGroupPreview]
 
 
+_COMPRESS_RE = re.compile(r"^(zstd|lzo|zlib|none|)$")
+_SUBVOL_PATH_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_./@-]{0,254}$")
+_STREAM_FILE_RE = re.compile(r"^[a-zA-Z0-9_.@-]{1,200}\.btrfs$")
+_QGROUP_RE = re.compile(r"^\d+/\d+$")
+
+
+class FormatRequest(BaseModel):
+    fstype: Literal["ext4", "btrfs"]
+    label: str = ""
+    compression: str = ""   # btrfs only: zstd | lzo | zlib | none
+
+    @field_validator("compression")
+    @classmethod
+    def compression_valid(cls, v):
+        if not _COMPRESS_RE.match(v):
+            raise ValueError("compression must be zstd, lzo, zlib, none, or ''")
+        return v
+
+
+class BtrfsSubvolCreateRequest(BaseModel):
+    name: str
+
+    @field_validator("name")
+    @classmethod
+    def name_valid(cls, v):
+        if not _SUBVOL_PATH_RE.match(v) or ".." in v.split("/"):
+            raise ValueError("invalid subvolume name")
+        return v
+
+
+class BtrfsSubvolDeleteRequest(BaseModel):
+    path: str
+    recursive: bool = False
+
+    @field_validator("path")
+    @classmethod
+    def path_valid(cls, v):
+        if not _SUBVOL_PATH_RE.match(v) or ".." in v.split("/"):
+            raise ValueError("invalid path")
+        return v
+
+
+class BtrfsSnapshotRequest(BaseModel):
+    source_path: str
+    dest_path: str
+    readonly: bool = False
+
+    @field_validator("source_path", "dest_path")
+    @classmethod
+    def path_valid(cls, v):
+        if not _SUBVOL_PATH_RE.match(v) or ".." in v.split("/"):
+            raise ValueError("invalid path")
+        return v
+
+
+class BtrfsBalanceRequest(BaseModel):
+    usage_filter: int | None = None     # % 0-100: only balance chunks < N% full
+    metadata_usage: int | None = None
+
+
+class BtrfsDefragRequest(BaseModel):
+    path: str = ""
+    recursive: bool = True
+    compression: str = ""
+
+    @field_validator("path")
+    @classmethod
+    def path_valid(cls, v):
+        if v and (not _SUBVOL_PATH_RE.match(v) or ".." in v.split("/")):
+            raise ValueError("invalid path")
+        return v
+
+    @field_validator("compression")
+    @classmethod
+    def compression_valid(cls, v):
+        if not _COMPRESS_RE.match(v):
+            raise ValueError("invalid compression")
+        return v
+
+
+class BtrfsQuotaSetRequest(BaseModel):
+    qgroup: str
+    limit_bytes: int
+
+    @field_validator("qgroup")
+    @classmethod
+    def qgroup_valid(cls, v):
+        if not _QGROUP_RE.match(v):
+            raise ValueError("qgroup must match N/N format")
+        return v
+
+    @field_validator("limit_bytes")
+    @classmethod
+    def limit_valid(cls, v):
+        if v < 0:
+            raise ValueError("limit_bytes must be non-negative")
+        return v
+
+
+class BtrfsSendRequest(BaseModel):
+    snapshot_path: str
+    dest_file: str
+    parent_path: str | None = None
+
+    @field_validator("snapshot_path")
+    @classmethod
+    def snap_valid(cls, v):
+        if not _SUBVOL_PATH_RE.match(v) or ".." in v.split("/"):
+            raise ValueError("invalid snapshot_path")
+        return v
+
+    @field_validator("dest_file")
+    @classmethod
+    def file_valid(cls, v):
+        if not _STREAM_FILE_RE.match(v):
+            raise ValueError("dest_file must be a .btrfs filename")
+        return v
+
+    @field_validator("parent_path")
+    @classmethod
+    def parent_valid(cls, v):
+        if v is not None and (not _SUBVOL_PATH_RE.match(v) or ".." in v.split("/")):
+            raise ValueError("invalid parent_path")
+        return v
+
+
+class BtrfsReceiveRequest(BaseModel):
+    source_file: str
+
+    @field_validator("source_file")
+    @classmethod
+    def file_valid(cls, v):
+        if not _STREAM_FILE_RE.match(v):
+            raise ValueError("source_file must be a .btrfs filename")
+        return v
+
+
+class CompressionRequest(BaseModel):
+    compression: str
+
+    @field_validator("compression")
+    @classmethod
+    def compression_valid(cls, v):
+        if not _COMPRESS_RE.match(v):
+            raise ValueError("invalid compression value")
+        return v
+
+
 class ProgressEvent(BaseModel):
     event: str
     arrays: list[dict] = []
