@@ -95,8 +95,12 @@ async def upload_iso(file: UploadFile = File(...)):
     if not _ISO_RE.match(filename):
         raise HTTPException(status_code=400,
                             detail="Filename must match [a-zA-Z0-9][a-zA-Z0-9_.@-]{0,200}.iso")
-    # Write to a temp file — www-data has write access to /tmp
-    tmp_fd, tmp_path = tempfile.mkstemp(suffix=".iso", dir="/tmp")
+    # Stream to the upload spool, which is on the same filesystem as the
+    # final ISO directory so the worker can atomically rename without
+    # copying gigabytes of data. /tmp is tmpfs and too small for ISOs.
+    spool_dir = "/var/lib/traid/iso-upload"
+    os.makedirs(spool_dir, exist_ok=True)
+    tmp_fd, tmp_path = tempfile.mkstemp(suffix=".iso", dir=spool_dir)
     try:
         with os.fdopen(tmp_fd, "wb") as f:
             while True:

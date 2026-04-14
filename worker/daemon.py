@@ -694,6 +694,7 @@ async def _handle_btrfs_receive(params: dict) -> dict:
 # ---------------------------------------------------------------------------
 
 async def _handle_vm_install_iso(params: dict) -> dict:
+    import os
     import shutil
     src = Path(params["src_path"])
     if not src.exists():
@@ -701,6 +702,10 @@ async def _handle_vm_install_iso(params: dict) -> dict:
     dest = vm_ops.ISO_DIR / params["filename"]
     vm_ops.ISO_DIR.mkdir(parents=True, exist_ok=True)
     shutil.move(str(src), str(dest))
+    # Make the ISO world-readable and root-owned so libvirt/qemu can
+    # read it — the upload spool was www-data-owned with 0600 perms.
+    os.chown(dest, 0, 0)
+    os.chmod(dest, 0o644)
     return {"filename": params["filename"], "ok": True}
 
 

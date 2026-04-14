@@ -23,6 +23,14 @@ case "$1" in
             traid \
             --quiet
 
+        # Create an upload spool directory on the same filesystem as the
+        # ISO destination, writable by the web user. Uploaded ISOs are
+        # streamed here (not /tmp, which is tmpfs and too small) and the
+        # worker then does an atomic rename into /var/lib/traid/iso/.
+        mkdir -p /var/lib/traid/iso-upload
+        chown www-data:www-data /var/lib/traid/iso-upload
+        chmod 0750 /var/lib/traid/iso-upload
+
         # Point lighttpd's document root at the TRAID static files.
         # lighty-enable-mod only handles numbered module configs, so we
         # manage the symlink and document-root ourselves.

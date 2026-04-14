@@ -20,7 +20,7 @@ SyslogIdentifier=traid-web
 NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectSystem=strict
-ReadWritePaths=/usr/lib/traid
+ReadWritePaths=/usr/lib/traid /var/lib/traid/iso-upload
 
 [Install]
 WantedBy=multi-user.target

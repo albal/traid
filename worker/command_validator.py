@@ -501,9 +501,13 @@ def validate_request(payload: dict) -> tuple[str, dict]:
     # ---- VM management ----
     elif action == "vm_install_iso":
         src_path = raw_params["src_path"]
-        # src_path must be a temp file under /tmp — writable by www-data
-        if not isinstance(src_path, str) or not re.match(r"^/tmp/[a-zA-Z0-9_.@-]{1,200}$", src_path):
-            raise ValidationError("src_path: must be a path under /tmp")
+        # src_path must be a temp file in the ISO upload spool — writable
+        # by www-data and on the same filesystem as the ISO directory so
+        # the worker can atomic-rename without copying gigabytes.
+        if not isinstance(src_path, str) or not re.match(
+            r"^/var/lib/traid/iso-upload/[a-zA-Z0-9_.@-]{1,200}$", src_path
+        ):
+            raise ValidationError("src_path: must be a path under /var/lib/traid/iso-upload")
         validated["src_path"] = src_path
         filename = raw_params["filename"]
         if not isinstance(filename, str) or not _ISO_FILENAME_RE.match(filename):

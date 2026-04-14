@@ -1506,3 +1506,54 @@ def test_samba_remove_share_invalid_name():
             "action": "samba_remove_share",
             "params": {"name": "bad name!"},
         })
+
+
+# ---------------------------------------------------------------------------
+# vm_install_iso
+# ---------------------------------------------------------------------------
+
+def test_vm_install_iso_valid():
+    action, params = validate_request({
+        "action": "vm_install_iso",
+        "params": {
+            "src_path": "/var/lib/traid/iso-upload/tmpabc123.iso",
+            "filename": "debian-12.5.0-amd64-netinst.iso",
+        },
+    })
+    assert action == "vm_install_iso"
+    assert params["src_path"] == "/var/lib/traid/iso-upload/tmpabc123.iso"
+    assert params["filename"] == "debian-12.5.0-amd64-netinst.iso"
+
+
+def test_vm_install_iso_rejects_tmp():
+    # Old /tmp path must no longer be accepted — /tmp is tmpfs and full
+    with pytest.raises(ValidationError):
+        validate_request({
+            "action": "vm_install_iso",
+            "params": {
+                "src_path": "/tmp/tmpabc123.iso",
+                "filename": "foo.iso",
+            },
+        })
+
+
+def test_vm_install_iso_rejects_traversal():
+    with pytest.raises(ValidationError):
+        validate_request({
+            "action": "vm_install_iso",
+            "params": {
+                "src_path": "/var/lib/traid/iso-upload/../iso/evil.iso",
+                "filename": "foo.iso",
+            },
+        })
+
+
+def test_vm_install_iso_rejects_bad_filename():
+    with pytest.raises(ValidationError):
+        validate_request({
+            "action": "vm_install_iso",
+            "params": {
+                "src_path": "/var/lib/traid/iso-upload/tmpabc.iso",
+                "filename": "../evil.iso",
+            },
+        })
