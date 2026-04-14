@@ -28,6 +28,7 @@ jobs:
           python3.13 -m venv venv
           venv/bin/pip install --quiet \
             fastapi uvicorn[standard] pydantic python-json-logger \
+            python-multipart \
             pytest pytest-asyncio httpx
 
       - name: Run tests
