@@ -71,6 +71,30 @@ async def list_containers(all_containers: bool = True) -> list:
     return result
 
 
+async def create_container(
+    image: str,
+    name: str = "",
+    ports: list = None,
+    restart: str = "no",
+    env_vars: list = None,
+) -> dict:
+    cmd = ["run", "-d"]
+    if name:
+        cmd += ["--name", name]
+    if restart and restart != "no":
+        cmd += ["--restart", restart]
+    for p in (ports or []):
+        cmd += ["-p", p]
+    for e in (env_vars or []):
+        cmd += ["-e", e]
+    cmd.append(image)
+    rc, out, err = await _docker(*cmd)
+    if rc != 0:
+        raise RuntimeError(f"docker run failed: {err.strip()}")
+    container_id = out.strip()[:12]
+    return {"container_id": container_id, "ok": True}
+
+
 async def container_action(container_id: str, action: str) -> dict:
     rc, _, err = await _docker(action, container_id)
     if rc != 0:

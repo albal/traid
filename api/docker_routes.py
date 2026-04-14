@@ -12,12 +12,57 @@ from api.models import JobAccepted
 
 router = APIRouter(tags=["docker"])
 
-_DOCKER_ID_RE    = re.compile(r"^[a-f0-9A-F]{1,64}$")
-_DOCKER_IMAGE_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_./@:-]{1,254}$")
+_DOCKER_ID_RE             = re.compile(r"^[a-f0-9A-F]{1,64}$")
+_DOCKER_IMAGE_RE          = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_./@:-]{1,254}$")
+_DOCKER_CONTAINER_NAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,62}$")
+_DOCKER_PORT_RE           = re.compile(r"^(?:\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}:)?\d{1,5}:\d{1,5}(?:/(?:tcp|udp))?$")
+_DOCKER_ENV_RE            = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,127}=[^\n\r;&|`$<>]{0,512}$")
 
 
 class ContainerActionRequest(BaseModel):
     action: Literal["start", "stop", "rm"]
+
+
+class ContainerCreateRequest(BaseModel):
+    image:    str
+    name:     str = ""
+    ports:    list[str] = []
+    restart:  Literal["no", "always", "unless-stopped", "on-failure"] = "no"
+    env_vars: list[str] = []
+
+    @field_validator("image")
+    @classmethod
+    def _image(cls, v):
+        if not _DOCKER_IMAGE_RE.match(v):
+            raise ValueError("invalid image name/tag")
+        return v
+
+    @field_validator("name")
+    @classmethod
+    def _name(cls, v):
+        if v and not _DOCKER_CONTAINER_NAME_RE.match(v):
+            raise ValueError("invalid container name")
+        return v
+
+    @field_validator("ports")
+    @classmethod
+    def _ports(cls, v):
+        if len(v) > 20:
+            raise ValueError("too many port mappings (max 20)")
+        for p in v:
+            if not _DOCKER_PORT_RE.match(p):
+                raise ValueError(f"invalid port mapping: {p!r}")
+        return v
+
+    @field_validator("env_vars")
+    @classmethod
+    def _env_vars(cls, v):
+        if len(v) > 50:
+            raise ValueError("too many env vars (max 50)")
+        for e in v:
+            if not _DOCKER_ENV_RE.match(e):
+                raise ValueError(f"invalid env var: {e!r}")
+        return v
 
 
 class PullImageRequest(BaseModel):
@@ -48,6 +93,17 @@ async def _send(action: str, params: dict = {}) -> dict:
 @router.get("/api/containers")
 async def list_containers(all: bool = True):
     return await _send("docker_list_containers", {"all": all})
+
+
+@router.post("/api/containers", status_code=201)
+async def create_container(request: ContainerCreateRequest):
+    return await _send("docker_create_container", {
+        "image":    request.image,
+        "name":     request.name,
+        "ports":    request.ports,
+        "restart":  request.restart,
+        "env_vars": request.env_vars,
+    })
 
 
 @router.post("/api/containers/{container_id}/action")

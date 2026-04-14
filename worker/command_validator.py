@@ -17,6 +17,12 @@ _ISO_FILENAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_.@-]{0,200}\.iso$")
 _DOCKER_ID_RE = re.compile(r"^[a-f0-9A-F]{1,64}$")
 # Docker image name:tag — e.g. ubuntu:22.04, ghcr.io/user/repo:latest
 _DOCKER_IMAGE_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_./@:-]{1,254}$")
+# Docker container name: alphanumeric + _ -
+_DOCKER_CONTAINER_NAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,62}$")
+# Docker port mapping: [host_ip:]host_port:container_port[/proto]
+_DOCKER_PORT_RE = re.compile(r"^(?:\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}:)?\d{1,5}:\d{1,5}(?:/(?:tcp|udp))?$")
+# Docker env var: KEY=value (no shell metacharacters)
+_DOCKER_ENV_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,127}=[^\n\r;&|`$<>]{0,512}$")
 # Backup job ID — same UUID pattern as _JOB_ID_RE (defined later)
 # NFS/local path — must be absolute, under /srv/traid/ or /mnt/traid/ or /var/lib/traid/
 _SHARE_PATH_RE = re.compile(
@@ -202,6 +208,7 @@ _ALLOWED_ACTIONS: dict[str, dict] = {
                               "optional": ["parent_path"]},
     "btrfs_receive":        {"required": ["vg_name", "source_file"], "optional": []},
     # ---- VM management ----
+    "vm_install_iso":       {"required": ["src_path", "filename"], "optional": []},
     "vm_list":              {"required": [], "optional": []},
     "vm_info":              {"required": ["name"], "optional": []},
     "vm_action":            {"required": ["name", "action"], "optional": []},
@@ -211,6 +218,8 @@ _ALLOWED_ACTIONS: dict[str, dict] = {
     "vm_delete":            {"required": ["name"], "optional": ["keep_storage"]},
     # ---- Docker ----
     "docker_list_containers":  {"required": [], "optional": ["all"]},
+    "docker_create_container": {"required": ["image"],
+                                "optional": ["name", "ports", "restart", "env_vars"]},
     "docker_container_action": {"required": ["container_id", "action"], "optional": []},
     "docker_container_logs":   {"required": ["container_id"], "optional": ["lines"]},
     "docker_list_images":      {"required": [], "optional": []},
@@ -490,6 +499,17 @@ def validate_request(payload: dict) -> tuple[str, dict]:
         validated["source_file"] = source_file
 
     # ---- VM management ----
+    elif action == "vm_install_iso":
+        src_path = raw_params["src_path"]
+        # src_path must be a temp file under /tmp — writable by www-data
+        if not isinstance(src_path, str) or not re.match(r"^/tmp/[a-zA-Z0-9_.@-]{1,200}$", src_path):
+            raise ValidationError("src_path: must be a path under /tmp")
+        validated["src_path"] = src_path
+        filename = raw_params["filename"]
+        if not isinstance(filename, str) or not _ISO_FILENAME_RE.match(filename):
+            raise ValidationError("filename: invalid ISO filename")
+        validated["filename"] = filename
+
     elif action in ("vm_list", "vm_list_isos"):
         pass  # no params
 
@@ -536,6 +556,42 @@ def validate_request(payload: dict) -> tuple[str, dict]:
     elif action == "docker_list_containers":
         if "all" in raw_params:
             validated["all"] = bool(raw_params["all"])
+
+    elif action == "docker_create_container":
+        image = raw_params["image"]
+        if not isinstance(image, str) or not _DOCKER_IMAGE_RE.match(image):
+            raise ValidationError("image: invalid image name/tag")
+        validated["image"] = image
+        if "name" in raw_params:
+            name = raw_params["name"]
+            if not isinstance(name, str) or (name and not _DOCKER_CONTAINER_NAME_RE.match(name)):
+                raise ValidationError("name: invalid container name")
+            validated["name"] = name
+        if "ports" in raw_params:
+            ports = raw_params["ports"]
+            if not isinstance(ports, list):
+                raise ValidationError("ports: must be a list")
+            if len(ports) > 20:
+                raise ValidationError("ports: too many port mappings (max 20)")
+            for p in ports:
+                if not isinstance(p, str) or not _DOCKER_PORT_RE.match(p):
+                    raise ValidationError(f"ports: invalid port mapping {p!r}")
+            validated["ports"] = ports
+        if "restart" in raw_params:
+            restart = raw_params["restart"]
+            if restart not in {"no", "always", "unless-stopped", "on-failure"}:
+                raise ValidationError("restart: must be no|always|unless-stopped|on-failure")
+            validated["restart"] = restart
+        if "env_vars" in raw_params:
+            env_vars = raw_params["env_vars"]
+            if not isinstance(env_vars, list):
+                raise ValidationError("env_vars: must be a list")
+            if len(env_vars) > 50:
+                raise ValidationError("env_vars: too many env vars (max 50)")
+            for e in env_vars:
+                if not isinstance(e, str) or not _DOCKER_ENV_RE.match(e):
+                    raise ValidationError(f"env_vars: invalid env var {e!r}")
+            validated["env_vars"] = env_vars
 
     elif action == "docker_container_action":
         cid = raw_params["container_id"]

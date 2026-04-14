@@ -2,10 +2,14 @@
 VM management routes — /api/vms
 """
 
-from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel, field_validator
-from typing import Literal
+import os
 import re
+import tempfile
+from pathlib import Path
+from typing import Literal
+
+from fastapi import APIRouter, File, HTTPException, UploadFile
+from pydantic import BaseModel, field_validator
 
 from api import uds_client
 from api.models import JobAccepted
@@ -81,6 +85,32 @@ async def list_vms():
 @router.get("/isos")
 async def list_isos():
     return await _send("vm_list_isos")
+
+
+@router.post("/isos/upload", status_code=201)
+async def upload_iso(file: UploadFile = File(...)):
+    filename = Path(file.filename or "").name
+    if not _ISO_RE.match(filename):
+        raise HTTPException(status_code=400,
+                            detail="Filename must match [a-zA-Z0-9][a-zA-Z0-9_.@-]{0,200}.iso")
+    # Write to a temp file — www-data has write access to /tmp
+    tmp_fd, tmp_path = tempfile.mkstemp(suffix=".iso", dir="/tmp")
+    try:
+        with os.fdopen(tmp_fd, "wb") as f:
+            while True:
+                chunk = await file.read(65536)
+                if not chunk:
+                    break
+                f.write(chunk)
+        # Ask the worker (root) to move it into the ISO directory
+        return await _send("vm_install_iso", {"src_path": tmp_path, "filename": filename})
+    except Exception:
+        # Clean up temp file on error
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
 
 
 @router.get("/{name}")

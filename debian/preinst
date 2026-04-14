@@ -1,0 +1,19 @@
+#!/bin/sh
+set -e
+
+# Drop the apt preferences snippet before any package dependencies are
+# resolved.  This prevents qemu-system-gui (recommended by qemu-system-x86)
+# from being installed on a headless appliance.
+install -d /etc/apt/preferences.d
+cat > /etc/apt/preferences.d/traid <<'EOF'
+# TRAID: block qemu-system-gui (GTK/SDL display libraries)
+# qemu-system-x86 Recommends qemu-system-gui, which pulls in GTK and SDL.
+# TRAID is a headless appliance managed via a browser UI — no physical display
+# is ever needed.
+Package: qemu-system-gui
+Pin: release *
+Pin-Priority: -1
+EOF
+
+#DEBHELPER#
+exit 0

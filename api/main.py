@@ -8,6 +8,7 @@ capacity_preview (GET /api/preview) is the one exception: it calls
 traid_algorithm.py directly since it is pure calculation with no I/O.
 """
 
+import asyncio
 import logging
 import re
 import sys
@@ -16,6 +17,7 @@ from pathlib import Path
 from typing import Annotated
 
 from fastapi import FastAPI, HTTPException, Query, Response, WebSocket, WebSocketDisconnect
+from fastapi.responses import HTMLResponse
 from pythonjsonlogger import jsonlogger
 
 from api import uds_client
@@ -681,3 +683,130 @@ async def ws_progress(websocket: WebSocket):
         pass
     finally:
         ws_manager.disconnect(websocket)
+
+
+# ---------------------------------------------------------------------------
+# VNC console
+# ---------------------------------------------------------------------------
+
+_VM_NAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_.+-]{0,63}$")
+
+_NOVNC_HTML = """\
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>VNC — {name}</title>
+  <script src="https://cdn.jsdelivr.net/npm/@novnc/novnc@1.4.0/core/rfb.js" type="module">
+  </script>
+  <style>
+    * {{ margin:0; padding:0; box-sizing:border-box; }}
+    body {{ background:#111; display:flex; flex-direction:column; height:100vh; color:#ccc; font-family:monospace; }}
+    #toolbar {{ background:#1f2937; padding:8px 12px; font-size:13px; display:flex; align-items:center; gap:12px; }}
+    #screen {{ flex:1; overflow:hidden; }}
+    canvas {{ display:block; }}
+    #status {{ color:#9ca3af; }}
+  </style>
+</head>
+<body>
+<div id="toolbar">
+  <strong style="color:#60a5fa">TRAID</strong>
+  <span>VNC &mdash; {name}</span>
+  <span id="status">connecting…</span>
+</div>
+<div id="screen"></div>
+<script type="module">
+  import RFB from 'https://cdn.jsdelivr.net/npm/@novnc/novnc@1.4.0/core/rfb.js';
+  const status = document.getElementById('status');
+  const wsUrl = (location.protocol === 'https:' ? 'wss:' : 'ws:')
+    + '//' + location.host + '/ws/vnc/{name}';
+  const rfb = new RFB(document.getElementById('screen'), wsUrl);
+  rfb.scaleViewport = true;
+  rfb.resizeSession = true;
+  rfb.addEventListener('connect', () => {{ status.textContent = 'connected'; status.style.color = '#4ade80'; }});
+  rfb.addEventListener('disconnect', e => {{
+    status.textContent = 'disconnected' + (e.detail.clean ? '' : ' (error)');
+    status.style.color = '#f87171';
+  }});
+  rfb.addEventListener('credentialsrequired', () => {{
+    rfb.sendCredentials({{ password: '' }});
+  }});
+</script>
+</body>
+</html>
+"""
+
+
+@app.get("/novnc/{name}", response_class=HTMLResponse)
+async def vnc_console(name: str):
+    if not _VM_NAME_RE.match(name):
+        raise HTTPException(status_code=400, detail="invalid VM name")
+    return HTMLResponse(_NOVNC_HTML.format(name=name))
+
+
+@app.websocket("/ws/vnc/{name}")
+async def vnc_ws_proxy(websocket: WebSocket, name: str):
+    """WebSocket-to-TCP proxy connecting the browser to a VM's VNC port."""
+    if not _VM_NAME_RE.match(name):
+        await websocket.close(code=1008)
+        return
+
+    # Ask the worker for the VM's VNC display number
+    try:
+        vm_data = await uds_client.send_request("vm_info", {"name": name})
+    except (uds_client.WorkerUnavailableError, uds_client.WorkerError):
+        await websocket.close(code=1011)
+        return
+
+    vnc_display = vm_data.get("vnc_port")
+    if not isinstance(vnc_display, int) or vnc_display < 0:
+        await websocket.close(code=1011)
+        return
+
+    vnc_tcp_port = 5900 + vnc_display
+    try:
+        reader, writer = await asyncio.open_connection("127.0.0.1", vnc_tcp_port)
+    except OSError:
+        await websocket.close(code=1011)
+        return
+
+    await websocket.accept()
+
+    async def _ws_to_tcp():
+        try:
+            while True:
+                data = await websocket.receive_bytes()
+                writer.write(data)
+                await writer.drain()
+        except Exception:
+            pass
+        finally:
+            writer.close()
+
+    async def _tcp_to_ws():
+        try:
+            while True:
+                data = await reader.read(65536)
+                if not data:
+                    break
+                await websocket.send_bytes(data)
+        except Exception:
+            pass
+        finally:
+            try:
+                await websocket.close()
+            except Exception:
+                pass
+
+    ws_task  = asyncio.create_task(_ws_to_tcp())
+    tcp_task = asyncio.create_task(_tcp_to_ws())
+    done, pending = await asyncio.wait(
+        {ws_task, tcp_task}, return_when=asyncio.FIRST_COMPLETED
+    )
+    for t in pending:
+        t.cancel()
+        try:
+            await t
+        except asyncio.CancelledError:
+            pass

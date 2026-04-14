@@ -1284,12 +1284,22 @@
 
     <div class="flex items-center justify-between mb-4">
       <h2 class="text-base font-semibold text-gray-200">Virtual Machines</h2>
-      <button @click="loadVms()" class="text-xs text-gray-500 hover:text-gray-300">↻ Refresh</button>
+      <button @click="loadVms(), loadVmIsos()" class="text-xs text-gray-500 hover:text-gray-300">↻ Refresh</button>
+    </div>
+
+    <!-- Service status banner -->
+    <div x-show="vmStatus === 'unavailable' || vmStatus === 'error'"
+         class="mb-4 p-3 rounded border text-sm flex items-center gap-2"
+         :class="vmStatus === 'unavailable' ? 'bg-yellow-900/40 border-yellow-700 text-yellow-300' : 'bg-red-900/40 border-red-700 text-red-300'">
+      <span x-show="vmStatus === 'unavailable'">⚠</span>
+      <span x-show="vmStatus === 'error'">✕</span>
+      <span x-text="vmStatusMsg"></span>
     </div>
 
     <!-- VM list -->
     <div class="space-y-2 mb-6">
-      <div x-show="vms.length === 0" class="text-center text-gray-500 py-8 text-sm">No VMs found. Is libvirt running?</div>
+      <div x-show="vmStatus === 'ok' && vms.length === 0" class="text-center text-gray-500 py-8 text-sm">No VMs found.</div>
+      <div x-show="vmStatus === null" class="text-center text-gray-500 py-8 text-sm">Loading…</div>
       <template x-for="vm in vms" :key="vm.name">
         <div class="bg-gray-800 border border-gray-700 rounded-lg px-4 py-3 flex items-center justify-between gap-4">
           <div class="flex items-center gap-3 min-w-0">
@@ -1300,7 +1310,7 @@
                 <span x-text="vm.state || 'unknown'"></span>
                 <span x-show="vm.vcpus" x-text="vm.vcpus + ' vCPU'"></span>
                 <span x-show="vm.max_memory_kib" x-text="humanSize((vm.max_memory_kib||'0').replace(/\s+\w+/,'')*1024)"></span>
-                <span x-show="vm.vnc_port" class="text-blue-400" x-text="'VNC :' + vm.vnc_port"></span>
+                <span x-show="vm.vnc_port !== undefined && vm.vnc_port !== null" class="text-blue-400" x-text="'VNC :' + vm.vnc_port"></span>
               </div>
             </div>
           </div>
@@ -1321,11 +1331,40 @@
               <button @click="vmDoAction(vm.name,'shutdown')" :disabled="vmBusy[vm.name]"
                       class="text-xs px-2 py-1 rounded bg-gray-700 hover:bg-gray-600 text-gray-300 transition-colors disabled:opacity-40">Shutdown</button>
             </template>
+            <template x-if="vm.state === 'running' && vm.vnc_port !== undefined && vm.vnc_port !== null">
+              <a :href="'/novnc/' + vm.name" target="_blank"
+                 class="text-xs px-2 py-1 rounded bg-blue-700 hover:bg-blue-600 text-white transition-colors">VNC</a>
+            </template>
             <button @click="deleteVm(vm.name)" :disabled="vmBusy[vm.name]"
                     class="text-xs px-2 py-1 rounded bg-red-900/60 hover:bg-red-800/60 text-red-400 transition-colors disabled:opacity-40">Delete</button>
           </div>
         </div>
       </template>
+    </div>
+
+    <!-- ISO management -->
+    <div class="bg-gray-800 border border-gray-700 rounded-lg p-4 mb-4">
+      <div class="flex items-center justify-between mb-3">
+        <span class="text-sm font-semibold text-gray-300">ISO Images</span>
+        <span class="text-xs text-gray-500" x-text="vmIsos.length + ' ISOs in /var/lib/traid/iso/'"></span>
+      </div>
+      <div x-show="vmIsos.length === 0" class="text-xs text-gray-500 mb-3">No ISOs uploaded yet.</div>
+      <div class="flex flex-wrap gap-2 mb-3">
+        <template x-for="iso in vmIsos" :key="iso">
+          <span class="text-xs px-2 py-1 rounded bg-gray-700 border border-gray-600 text-gray-300 font-mono" x-text="iso"></span>
+        </template>
+      </div>
+      <!-- Upload form -->
+      <div class="flex items-center gap-2">
+        <label class="text-xs text-gray-400">Upload ISO:</label>
+        <input type="file" accept=".iso" @change="isoUploadFile = $event.target.files[0]"
+               class="text-xs text-gray-300 file:mr-2 file:py-1 file:px-3 file:rounded file:border-0 file:text-xs file:bg-gray-600 file:text-gray-200 file:hover:bg-gray-500 file:cursor-pointer" />
+        <button @click="uploadIso()" :disabled="isoUploadBusy || !isoUploadFile"
+                class="text-xs px-3 py-1 rounded bg-blue-700 hover:bg-blue-600 text-white transition-colors disabled:opacity-40">
+          <span x-show="!isoUploadBusy">Upload</span>
+          <span x-show="isoUploadBusy">Uploading…</span>
+        </button>
+      </div>
     </div>
 
     <!-- Create VM form -->
@@ -1378,12 +1417,22 @@
 
     <div class="flex items-center justify-between mb-4">
       <h2 class="text-base font-semibold text-gray-200">Docker Containers</h2>
-      <button @click="loadContainers()" class="text-xs text-gray-500 hover:text-gray-300">↻ Refresh</button>
+      <button @click="loadContainers(), loadDockerImages()" class="text-xs text-gray-500 hover:text-gray-300">↻ Refresh</button>
+    </div>
+
+    <!-- Service status banner -->
+    <div x-show="dockerStatus === 'unavailable' || dockerStatus === 'error'"
+         class="mb-4 p-3 rounded border text-sm flex items-center gap-2"
+         :class="dockerStatus === 'unavailable' ? 'bg-yellow-900/40 border-yellow-700 text-yellow-300' : 'bg-red-900/40 border-red-700 text-red-300'">
+      <span x-show="dockerStatus === 'unavailable'">⚠</span>
+      <span x-show="dockerStatus === 'error'">✕</span>
+      <span x-text="dockerStatusMsg"></span>
     </div>
 
     <!-- Containers list -->
     <div class="space-y-2 mb-6">
-      <div x-show="containers.length === 0" class="text-center text-gray-500 py-8 text-sm">No containers found. Is Docker running?</div>
+      <div x-show="dockerStatus === 'ok' && containers.length === 0" class="text-center text-gray-500 py-8 text-sm">No containers found.</div>
+      <div x-show="dockerStatus === null" class="text-center text-gray-500 py-8 text-sm">Loading…</div>
       <template x-for="c in containers" :key="c.id">
         <div class="bg-gray-800 border border-gray-700 rounded-lg px-4 py-3 flex items-center justify-between gap-4">
           <div class="flex items-center gap-3 min-w-0">
@@ -1426,6 +1475,47 @@
         <div class="flex-1 overflow-auto p-4 font-mono text-xs text-green-400 whitespace-pre-wrap bg-gray-900 rounded-b-xl"
              x-text="dockerLogs || (dockerLogsBusy ? 'Loading…' : 'No output')"></div>
       </div>
+    </div>
+
+    <!-- Run Container form -->
+    <div class="bg-gray-800 border border-gray-700 rounded-lg p-4 mb-4">
+      <div class="text-sm font-semibold text-gray-300 mb-3">Run Container</div>
+      <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-3">
+        <div class="md:col-span-2">
+          <label class="text-xs text-gray-400 block mb-1">Image</label>
+          <input x-model="containerCreateForm.image" placeholder="ubuntu:22.04"
+                 class="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-sm text-gray-200 focus:outline-none focus:border-blue-400" />
+        </div>
+        <div>
+          <label class="text-xs text-gray-400 block mb-1">Name (optional)</label>
+          <input x-model="containerCreateForm.name" placeholder="my-container"
+                 class="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-sm text-gray-200 focus:outline-none focus:border-blue-400" />
+        </div>
+        <div>
+          <label class="text-xs text-gray-400 block mb-1">Restart policy</label>
+          <select x-model="containerCreateForm.restart"
+                  class="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-sm text-gray-200">
+            <option value="no">no</option>
+            <option value="always">always</option>
+            <option value="unless-stopped">unless-stopped</option>
+            <option value="on-failure">on-failure</option>
+          </select>
+        </div>
+        <div class="md:col-span-2">
+          <label class="text-xs text-gray-400 block mb-1">Port mappings (comma-separated, e.g. 8080:80)</label>
+          <input x-model="containerCreateForm.ports" placeholder="8080:80, 8443:443"
+                 class="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-sm text-gray-200 focus:outline-none focus:border-blue-400" />
+        </div>
+        <div class="md:col-span-2">
+          <label class="text-xs text-gray-400 block mb-1">Env vars (one KEY=value per line)</label>
+          <textarea x-model="containerCreateForm.env" rows="2" placeholder="MY_VAR=value"
+                    class="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-sm text-gray-200 focus:outline-none focus:border-blue-400 resize-none"></textarea>
+        </div>
+      </div>
+      <button @click="createContainer()" :disabled="containerCreateBusy || !containerCreateForm.image.trim()"
+              class="px-4 py-2 rounded text-sm bg-green-700 hover:bg-green-600 text-white transition-colors disabled:opacity-40">
+        Run Container
+      </button>
     </div>
 
     <!-- Images + Pull -->
@@ -1612,13 +1702,13 @@
         <div class="grid grid-cols-1 md:grid-cols-3 gap-3 mb-3">
           <div>
             <label class="text-xs text-gray-400 block mb-1">Path (under /mnt/traid/…)</label>
-            <select x-model="nfsAddForm.path"
-                    class="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-sm text-gray-200">
-              <option value="">— select mount point —</option>
+            <input x-model="nfsAddForm.path" list="nfsPathList" placeholder="/mnt/traid/my-volume"
+                   class="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-sm text-gray-200 focus:outline-none focus:border-blue-400" />
+            <datalist id="nfsPathList">
               <template x-for="vg in (volumes.vgs || []).filter(v => (fsData[v.vg_name]||{}).mounted)" :key="vg.vg_name">
-                <option :value="'/mnt/traid/' + vg.vg_name" x-text="'/mnt/traid/' + vg.vg_name"></option>
+                <option :value="'/mnt/traid/' + vg.vg_name"></option>
               </template>
-            </select>
+            </datalist>
           </div>
           <div>
             <label class="text-xs text-gray-400 block mb-1">Clients</label>
@@ -1665,13 +1755,13 @@
           </div>
           <div>
             <label class="text-xs text-gray-400 block mb-1">Path</label>
-            <select x-model="smbAddForm.path"
-                    class="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-sm text-gray-200">
-              <option value="">— select mount point —</option>
+            <input x-model="smbAddForm.path" list="smbPathList" placeholder="/mnt/traid/my-volume"
+                   class="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-sm text-gray-200 focus:outline-none focus:border-blue-400" />
+            <datalist id="smbPathList">
               <template x-for="vg in (volumes.vgs || []).filter(v => (fsData[v.vg_name]||{}).mounted)" :key="vg.vg_name">
-                <option :value="'/mnt/traid/' + vg.vg_name" x-text="'/mnt/traid/' + vg.vg_name"></option>
+                <option :value="'/mnt/traid/' + vg.vg_name"></option>
               </template>
-            </select>
+            </datalist>
           </div>
           <div>
             <label class="text-xs text-gray-400 block mb-1">Comment</label>
@@ -1928,6 +2018,10 @@ function traidApp() {
     vmCreateForm: { name: '', iso: '', ram_mb: 2048, vcpus: 2, disk_gb: 20 },
     vmCreateBusy: false,
     vmIsos: [],
+    vmStatus: null,       // null=unknown, 'ok', 'unavailable', 'error'
+    vmStatusMsg: '',
+    isoUploadFile: null,
+    isoUploadBusy: false,
 
     // Containers / Docker
     containers: [],
@@ -1938,6 +2032,10 @@ function traidApp() {
     dockerLogsBusy: false,
     pullImageName: '',
     pullBusy: false,
+    dockerStatus: null,   // null=unknown, 'ok', 'unavailable', 'error'
+    dockerStatusMsg: '',
+    containerCreateForm: { image: '', name: '', ports: '', restart: 'no', env: '' },
+    containerCreateBusy: false,
 
     // Backup Jobs
     backupJobs: [],
@@ -2621,8 +2719,22 @@ function traidApp() {
     async loadVms() {
       try {
         const res = await fetch('/api/vms')
-        if (res.ok) this.vms = await res.json()
-      } catch (_) {}
+        if (res.status === 503) {
+          this.vmStatus = 'unavailable'
+          this.vmStatusMsg = 'libvirt is not running or not installed.'
+          this.vms = []
+        } else if (res.ok) {
+          this.vmStatus = 'ok'
+          this.vmStatusMsg = ''
+          this.vms = await res.json()
+        } else {
+          this.vmStatus = 'error'
+          this.vmStatusMsg = `Error loading VMs (HTTP ${res.status}).`
+        }
+      } catch (e) {
+        this.vmStatus = 'error'
+        this.vmStatusMsg = 'Could not reach the API: ' + e.message
+      }
     },
 
     async loadVmIsos() {
@@ -2698,6 +2810,29 @@ function traidApp() {
       }
     },
 
+    async uploadIso() {
+      if (!this.isoUploadFile) return
+      this.isoUploadBusy = true
+      try {
+        const form = new FormData()
+        form.append('file', this.isoUploadFile)
+        const res = await fetch('/api/vms/isos/upload', { method: 'POST', body: form })
+        if (!res.ok) {
+          const err = await res.json()
+          throw new Error(err.detail?.message || err.detail || `HTTP ${res.status}`)
+        }
+        this.isoUploadFile = null
+        // Reset the file input
+        const inp = document.querySelector('input[type="file"][accept=".iso"]')
+        if (inp) inp.value = ''
+        await this.loadVmIsos()
+      } catch (e) {
+        this.errorMsg = 'ISO upload failed: ' + e.message
+      } finally {
+        this.isoUploadBusy = false
+      }
+    },
+
     // -----------------------------------------------------------------------
     // Containers / Docker
     // -----------------------------------------------------------------------
@@ -2705,8 +2840,22 @@ function traidApp() {
     async loadContainers() {
       try {
         const res = await fetch('/api/containers?all=true')
-        if (res.ok) this.containers = await res.json()
-      } catch (_) {}
+        if (res.status === 503) {
+          this.dockerStatus = 'unavailable'
+          this.dockerStatusMsg = 'Docker is not running or not installed.'
+          this.containers = []
+        } else if (res.ok) {
+          this.dockerStatus = 'ok'
+          this.dockerStatusMsg = ''
+          this.containers = await res.json()
+        } else {
+          this.dockerStatus = 'error'
+          this.dockerStatusMsg = `Error loading containers (HTTP ${res.status}).`
+        }
+      } catch (e) {
+        this.dockerStatus = 'error'
+        this.dockerStatusMsg = 'Could not reach the API: ' + e.message
+      }
     },
 
     async loadDockerImages() {
@@ -2805,6 +2954,40 @@ function traidApp() {
         await this.loadDockerImages()
       } catch (e) {
         this.errorMsg = 'Prune failed: ' + e.message
+      }
+    },
+
+    async createContainer() {
+      if (!this.containerCreateForm.image.trim()) return
+      this.containerCreateBusy = true
+      try {
+        // Parse ports: split comma-separated string → list
+        const ports = this.containerCreateForm.ports
+          .split(',').map(p => p.trim()).filter(Boolean)
+        // Parse env vars: split newline-separated KEY=VALUE pairs
+        const env_vars = this.containerCreateForm.env
+          .split('\n').map(e => e.trim()).filter(Boolean)
+        const res = await fetch('/api/containers', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            image:    this.containerCreateForm.image.trim(),
+            name:     this.containerCreateForm.name.trim(),
+            ports,
+            restart:  this.containerCreateForm.restart,
+            env_vars,
+          }),
+        })
+        if (!res.ok) {
+          const err = await res.json()
+          throw new Error(err.detail?.message || err.detail || `HTTP ${res.status}`)
+        }
+        this.containerCreateForm = { image: '', name: '', ports: '', restart: 'no', env: '' }
+        await this.loadContainers()
+      } catch (e) {
+        this.errorMsg = 'Create container failed: ' + e.message
+      } finally {
+        this.containerCreateBusy = false
       }
     },
 

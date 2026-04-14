@@ -693,6 +693,17 @@ async def _handle_btrfs_receive(params: dict) -> dict:
 # Handlers: VM management
 # ---------------------------------------------------------------------------
 
+async def _handle_vm_install_iso(params: dict) -> dict:
+    import shutil
+    src = Path(params["src_path"])
+    if not src.exists():
+        raise FileNotFoundError(f"Temp ISO not found: {src}")
+    dest = vm_ops.ISO_DIR / params["filename"]
+    vm_ops.ISO_DIR.mkdir(parents=True, exist_ok=True)
+    shutil.move(str(src), str(dest))
+    return {"filename": params["filename"], "ok": True}
+
+
 async def _handle_vm_list(_params: dict) -> dict:
     return {"vms": await vm_ops.list_vms()}
 
@@ -730,6 +741,16 @@ async def _handle_vm_delete(params: dict) -> dict:
 # ---------------------------------------------------------------------------
 # Handlers: Docker
 # ---------------------------------------------------------------------------
+
+async def _handle_docker_create_container(params: dict) -> dict:
+    return await docker_ops.create_container(
+        image=params["image"],
+        name=params.get("name", ""),
+        ports=params.get("ports", []),
+        restart=params.get("restart", "no"),
+        env_vars=params.get("env_vars", []),
+    )
+
 
 async def _handle_docker_list_containers(params: dict) -> dict:
     containers = await docker_ops.list_containers(
@@ -903,6 +924,7 @@ _HANDLERS = {
     "btrfs_send":             _handle_btrfs_send,
     "btrfs_receive":          _handle_btrfs_receive,
     # VM management
+    "vm_install_iso":         _handle_vm_install_iso,
     "vm_list":                _handle_vm_list,
     "vm_info":                _handle_vm_info,
     "vm_action":              _handle_vm_action,
@@ -911,6 +933,7 @@ _HANDLERS = {
     "vm_delete":              _handle_vm_delete,
     # Docker
     "docker_list_containers": _handle_docker_list_containers,
+    "docker_create_container":_handle_docker_create_container,
     "docker_container_action":_handle_docker_container_action,
     "docker_container_logs":  _handle_docker_container_logs,
     "docker_list_images":     _handle_docker_list_images,
