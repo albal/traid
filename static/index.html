@@ -437,7 +437,7 @@
                         <span x-text="humanSize(fsData[vg.vg_name].avail_bytes) + ' free'"></span>
                         <span x-text="(fsData[vg.vg_name].use_pct || 0) + '%'"></span>
                       </div>
-                      <div x-show="fsData[vg.vg_name].inodes_used != null"
+                      <div x-show="fsData[vg.vg_name].inodes_used != null && fsData[vg.vg_name].fstype !== 'btrfs'"
                            class="text-xs text-gray-600 mt-0.5"
                            x-text="`${(fsData[vg.vg_name].inodes_used||0).toLocaleString()} files / ${(fsData[vg.vg_name].inodes_total||0).toLocaleString()} inodes`"></div>
                     </div>
@@ -856,9 +856,9 @@
             <div class="text-xs text-gray-400 mb-1">Free</div>
             <div class="font-semibold text-green-400" x-text="humanSize((fsData[fsModal] || {}).avail_bytes || 0)"></div>
           </div>
-          <div class="bg-gray-700/50 rounded-lg p-3">
+          <div class="bg-gray-700/50 rounded-lg p-3" x-show="(fsData[fsModal] || {}).fstype !== 'btrfs'">
             <div class="text-xs text-gray-400 mb-1">Files (inodes used)</div>
-            <div class="font-semibold" x-text="((fsData[fsModal] || {}).inodes_used || 0).toLocaleString()"></div>
+            <div class="font-semibold" x-text="(fsData[fsModal] || {}).inodes_used != null ? ((fsData[fsModal] || {}).inodes_used || 0).toLocaleString() + ' / ' + ((fsData[fsModal] || {}).inodes_total || 0).toLocaleString() : '—'"></div>
           </div>
           <div class="bg-gray-700/50 rounded-lg p-3" x-show="(fsData[fsModal] || {}).fstype === 'btrfs'">
             <div class="text-xs text-gray-400 mb-1">Compression</div>
@@ -1481,14 +1481,14 @@ function traidApp() {
       try {
         const body = { fstype: this.formatFstype, label: this.formatLabel }
         if (this.formatFstype === 'btrfs') body.compression = this.formatCompression
-        const res = await fetch(`/api/volumes/${encodeURIComponent(this.formatModal)}/filesystem`, {
+        const vgName = this.formatModal
+        const res = await fetch(`/api/volumes/${encodeURIComponent(vgName)}/filesystem`, {
           method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
         })
         if (!res.ok) throw new Error((await res.json()).detail?.message || `HTTP ${res.status}`)
         this.formatModal = null
         this.showMonitor = true
         await this.loadJobs()
-        await this.loadFsInfo(this.formatModal || '')
       } catch (e) {
         this.errorMsg = 'Format failed: ' + e.message
       } finally {
@@ -1499,6 +1499,7 @@ function traidApp() {
     async fsMountToggle(vgName) {
       const info = this.fsData[vgName] || {}
       const action = info.mounted ? 'unmount' : 'mount'
+      if (action === 'unmount' && !confirm(`Unmount ${vgName}?\n\nAny open files on this volume will lose access.`)) return
       this.fsBusy = true
       try {
         const res = await fetch(`/api/volumes/${encodeURIComponent(vgName)}/filesystem/${action}`, { method: 'POST' })
@@ -1726,11 +1727,15 @@ function traidApp() {
           'fs_format', 'fs_mount', 'fs_unmount',
           'btrfs_scrub', 'btrfs_balance', 'btrfs_defrag', 'btrfs_dedup',
         ])
+        let needsVolumeReload = false
         for (const job of justFinished) {
           if (job.vg_name && fsJobTypes.has(job.type)) {
             await this.loadFsInfo(job.vg_name)
+            needsVolumeReload = true
           }
         }
+        // Reload volumes when an fs job finishes so the VG card badge updates
+        if (needsVolumeReload) await this.loadVolumes()
 
         // Full refresh when all active jobs clear
         if (hadActive && !nowActive) {

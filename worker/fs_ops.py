@@ -139,6 +139,21 @@ async def format_volume(vg_name: str, fstype: str,
 # Mount / Unmount
 # ---------------------------------------------------------------------------
 
+async def _chattr(path: Path, immutable: bool) -> None:
+    """Set (+i) or clear (-i) the immutable flag on a directory."""
+    flag = "+i" if immutable else "-i"
+    rc, _, err = await _run("chattr", flag, str(path))
+    if rc != 0:
+        logger.warning("chattr %s %s failed: %s", flag, path, err.strip())
+
+
+async def _ensure_mount_point(mp: Path) -> None:
+    """Create mount point directory and make it immutable."""
+    if not mp.exists():
+        mp.mkdir(parents=True, exist_ok=True)
+        await _chattr(mp, immutable=True)
+
+
 async def mount_volume(vg_name: str) -> dict:
     mp = _mount_point(vg_name)
     if _is_mounted(mp):
@@ -150,7 +165,7 @@ async def mount_volume(vg_name: str) -> dict:
     fstype = fsinfo.get("fstype", "")
     compression = fsinfo.get("compression", "")
 
-    mp.mkdir(parents=True, exist_ok=True)
+    await _ensure_mount_point(mp)
 
     cmd = ["mount"]
     if fstype:
@@ -162,8 +177,15 @@ async def mount_volume(vg_name: str) -> dict:
         cmd += ["-o", ",".join(opts)]
     cmd += [lv, str(mp)]
 
+    # Lift immutability so the kernel can attach the filesystem.
+    # Do NOT restore it afterwards — once mounted the flag would apply to the
+    # root of the mounted filesystem, not the underlying directory.
+    # It is restored by unmount_volume() after the filesystem is detached.
+    await _chattr(mp, immutable=False)
     rc, _, err = await _run(*cmd)
     if rc != 0:
+        # Mount failed — re-apply the flag to the bare directory
+        await _chattr(mp, immutable=True)
         raise RuntimeError(f"mount failed: {err.strip()}")
 
     state.setdefault(vg_name, {})["mounted"] = True
@@ -183,6 +205,9 @@ async def unmount_volume(vg_name: str) -> dict:
     rc, _, err = await _run("umount", str(mp))
     if rc != 0:
         raise RuntimeError(f"umount failed: {err.strip()}")
+
+    # Filesystem is now detached — apply immutable flag to the bare directory
+    await _chattr(mp, immutable=True)
 
     state = _load_state()
     state.setdefault(vg_name, {})["mounted"] = False
@@ -257,19 +282,37 @@ async def _fill_df_stats(mount_point: str, info: dict) -> None:
                 info["avail_bytes"] = int(p[2])
                 info["use_pct"]     = int(p[3].rstrip("%"))
 
-    rc, out, _ = await _run(
-        "df", "-i", "--output=itotal,iused,iavail", mount_point
-    )
+    # df -i: columns are Filesystem, Inodes, IUsed, IFree, IUse%, Mounted
+    # -i and --output are mutually exclusive, so parse positional columns.
+    rc, out, _ = await _run("df", "-i", mount_point)
     if rc == 0:
         lines = out.strip().splitlines()
         if len(lines) >= 2:
             p = lines[1].split()
-            if len(p) >= 3:
+            # p[1]=Inodes  p[2]=IUsed  p[3]=IFree
+            if len(p) >= 4:
                 def _int_or_none(s):
-                    return int(s) if s.isdigit() else None
-                info["inodes_total"] = _int_or_none(p[0])
-                info["inodes_used"]  = _int_or_none(p[1])
-                info["inodes_avail"] = _int_or_none(p[2])
+                    try:
+                        return int(s)
+                    except ValueError:
+                        return None
+                inodes_total = _int_or_none(p[1])
+                inodes_used  = _int_or_none(p[2])
+                inodes_avail = _int_or_none(p[3])
+                # btrfs reports 0 for all inode fields — use du --inodes instead
+                if inodes_used == 0 and info.get("fstype") == "btrfs":
+                    rc2, out2, _ = await _run("du", "--inodes", "-s", mount_point)
+                    if rc2 == 0:
+                        parts = out2.strip().split()
+                        info["inodes_used"] = int(parts[0]) if parts else None
+                    else:
+                        info["inodes_used"] = None
+                    info["inodes_total"] = None  # btrfs has no fixed limit
+                    info["inodes_avail"] = None
+                else:
+                    info["inodes_total"] = inodes_total
+                    info["inodes_used"]  = inodes_used
+                    info["inodes_avail"] = inodes_avail
 
 
 def _parse_tune2fs(output: str) -> dict:

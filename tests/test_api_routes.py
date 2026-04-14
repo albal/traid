@@ -96,6 +96,54 @@ def mock_worker():
             return {"jobs": []}
         if action == "job_delete":
             return {"cancelled": True, "job_id": params.get("job_id")}
+        if action == "fs_format":
+            return _accepted()
+        if action in ("fs_mount", "fs_unmount"):
+            return {"mounted": action == "fs_mount", "mount_point": "/mnt/traid/traid_vg"}
+        if action == "fs_info":
+            return {
+                "formatted": True, "fstype": "btrfs", "label": "data",
+                "compression": "zstd", "mounted": True,
+                "mount_point": "/mnt/traid/traid_vg",
+                "total_bytes": 10737418240, "used_bytes": 1073741824,
+                "avail_bytes": 9663676416, "use_pct": 10,
+            }
+        if action == "fs_set_compression":
+            return {"compression": params.get("compression")}
+        if action == "btrfs_subvol_list":
+            return {"subvolumes": []}
+        if action == "btrfs_subvol_create":
+            return {"created": True, "name": params.get("name")}
+        if action == "btrfs_subvol_delete":
+            return {"deleted": True}
+        if action == "btrfs_snapshot_create":
+            return {"created": True}
+        if action == "btrfs_subvol_set_default":
+            return {"ok": True}
+        if action == "btrfs_scrub_start":
+            return _accepted()
+        if action in ("btrfs_scrub_status", "btrfs_balance_status"):
+            return {"status": "idle"}
+        if action in ("btrfs_scrub_cancel", "btrfs_balance_cancel"):
+            return {"cancelled": True}
+        if action == "btrfs_balance_start":
+            return _accepted()
+        if action == "btrfs_defrag":
+            return _accepted()
+        if action == "btrfs_dedup":
+            return _accepted()
+        if action == "btrfs_quota_enable":
+            return {"enabled": True}
+        if action == "btrfs_quota_list":
+            return {"quotas": []}
+        if action == "btrfs_quota_set":
+            return {"ok": True}
+        if action == "btrfs_usage_detail":
+            return {"usage": {}}
+        if action == "btrfs_send":
+            return _accepted()
+        if action == "btrfs_receive":
+            return _accepted()
         return {}
 
     with patch("api.uds_client.send_request", side_effect=fake_send):
@@ -997,3 +1045,310 @@ async def test_worker_unavailable_returns_503():
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
             resp = await c.get("/api/disks")
     assert resp.status_code == 503
+
+
+# ---------------------------------------------------------------------------
+# POST /api/volumes/{vg_name}/filesystem  (format)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_format_ext4_accepted(client):
+    resp = await client.post("/api/volumes/traid_vg/filesystem",
+                             json={"fstype": "ext4"})
+    assert resp.status_code == 202
+    assert resp.json()["accepted"] is True
+
+@pytest.mark.asyncio
+async def test_format_btrfs_with_compression(client):
+    resp = await client.post("/api/volumes/traid_vg/filesystem",
+                             json={"fstype": "btrfs", "compression": "zstd", "label": "data"})
+    assert resp.status_code == 202
+
+@pytest.mark.asyncio
+async def test_format_invalid_fstype_rejected(client):
+    resp = await client.post("/api/volumes/traid_vg/filesystem",
+                             json={"fstype": "xfs"})
+    assert resp.status_code == 422
+
+@pytest.mark.asyncio
+async def test_format_invalid_compression_rejected(client):
+    resp = await client.post("/api/volumes/traid_vg/filesystem",
+                             json={"fstype": "btrfs", "compression": "gzip"})
+    assert resp.status_code == 422
+
+@pytest.mark.asyncio
+async def test_format_invalid_vg_name(client):
+    resp = await client.post("/api/volumes/0bad/filesystem",
+                             json={"fstype": "ext4"})
+    assert resp.status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# POST /api/volumes/{vg_name}/filesystem/mount|unmount
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_mount_volume(client):
+    resp = await client.post("/api/volumes/traid_vg/filesystem/mount")
+    assert resp.status_code == 200
+    assert resp.json()["mounted"] is True
+
+@pytest.mark.asyncio
+async def test_unmount_volume(client):
+    resp = await client.post("/api/volumes/traid_vg/filesystem/unmount")
+    assert resp.status_code == 200
+    assert resp.json()["mounted"] is False
+
+@pytest.mark.asyncio
+async def test_mount_invalid_vg_name(client):
+    resp = await client.post("/api/volumes/0invalid/filesystem/mount")
+    assert resp.status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# GET /api/volumes/{vg_name}/filesystem
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_get_fs_info(client):
+    resp = await client.get("/api/volumes/traid_vg/filesystem")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["formatted"] is True
+    assert data["fstype"] == "btrfs"
+    assert data["mounted"] is True
+
+@pytest.mark.asyncio
+async def test_get_fs_info_invalid_vg(client):
+    resp = await client.get("/api/volumes/0bad/filesystem")
+    assert resp.status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# PATCH /api/volumes/{vg_name}/filesystem/compression
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_set_compression_valid(client):
+    resp = await client.patch("/api/volumes/traid_vg/filesystem/compression",
+                              json={"compression": "zstd"})
+    assert resp.status_code == 200
+
+@pytest.mark.asyncio
+async def test_set_compression_invalid(client):
+    resp = await client.patch("/api/volumes/traid_vg/filesystem/compression",
+                              json={"compression": "gzip"})
+    assert resp.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# Btrfs subvolumes
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_list_subvolumes(client):
+    resp = await client.get("/api/volumes/traid_vg/btrfs/subvolumes")
+    assert resp.status_code == 200
+    assert "subvolumes" in resp.json()
+
+@pytest.mark.asyncio
+async def test_create_subvolume(client):
+    resp = await client.post("/api/volumes/traid_vg/btrfs/subvolumes",
+                             json={"name": "snapshots"})
+    assert resp.status_code == 201
+
+@pytest.mark.asyncio
+async def test_create_subvolume_traversal_rejected(client):
+    resp = await client.post("/api/volumes/traid_vg/btrfs/subvolumes",
+                             json={"name": "../etc"})
+    assert resp.status_code == 422
+
+@pytest.mark.asyncio
+async def test_delete_subvolume(client):
+    resp = await client.request("DELETE", "/api/volumes/traid_vg/btrfs/subvolumes",
+                                json={"path": "snapshots/snap1"})
+    assert resp.status_code == 200
+
+@pytest.mark.asyncio
+async def test_delete_subvolume_traversal_rejected(client):
+    resp = await client.request("DELETE", "/api/volumes/traid_vg/btrfs/subvolumes",
+                                json={"path": "../../etc"})
+    assert resp.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# Btrfs snapshots
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_create_snapshot(client):
+    resp = await client.post("/api/volumes/traid_vg/btrfs/snapshots",
+                             json={"source_path": "data", "dest_path": "snaps/s1",
+                                   "readonly": True})
+    assert resp.status_code == 201
+
+@pytest.mark.asyncio
+async def test_create_snapshot_traversal_rejected(client):
+    resp = await client.post("/api/volumes/traid_vg/btrfs/snapshots",
+                             json={"source_path": "../escape", "dest_path": "snaps/s1"})
+    assert resp.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# Btrfs scrub
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_scrub_start(client):
+    resp = await client.post("/api/volumes/traid_vg/btrfs/scrub")
+    assert resp.status_code == 202
+    assert resp.json()["accepted"] is True
+
+@pytest.mark.asyncio
+async def test_scrub_status(client):
+    resp = await client.get("/api/volumes/traid_vg/btrfs/scrub")
+    assert resp.status_code == 200
+
+@pytest.mark.asyncio
+async def test_scrub_cancel(client):
+    resp = await client.delete("/api/volumes/traid_vg/btrfs/scrub")
+    assert resp.status_code == 200
+
+@pytest.mark.asyncio
+async def test_scrub_invalid_vg(client):
+    resp = await client.post("/api/volumes/0bad/btrfs/scrub")
+    assert resp.status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# Btrfs balance
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_balance_start_no_filter(client):
+    resp = await client.post("/api/volumes/traid_vg/btrfs/balance", json={})
+    assert resp.status_code == 202
+
+@pytest.mark.asyncio
+async def test_balance_start_with_filter(client):
+    resp = await client.post("/api/volumes/traid_vg/btrfs/balance",
+                             json={"usage_filter": 50})
+    assert resp.status_code == 202
+
+@pytest.mark.asyncio
+async def test_balance_status(client):
+    resp = await client.get("/api/volumes/traid_vg/btrfs/balance")
+    assert resp.status_code == 200
+
+@pytest.mark.asyncio
+async def test_balance_cancel(client):
+    resp = await client.delete("/api/volumes/traid_vg/btrfs/balance")
+    assert resp.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# Btrfs defrag / dedup
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_defrag_defaults(client):
+    resp = await client.post("/api/volumes/traid_vg/btrfs/defrag", json={})
+    assert resp.status_code == 202
+
+@pytest.mark.asyncio
+async def test_defrag_with_options(client):
+    resp = await client.post("/api/volumes/traid_vg/btrfs/defrag",
+                             json={"path": "subvol1", "compression": "zstd"})
+    assert resp.status_code == 202
+
+@pytest.mark.asyncio
+async def test_defrag_bad_compression(client):
+    resp = await client.post("/api/volumes/traid_vg/btrfs/defrag",
+                             json={"compression": "bzip2"})
+    assert resp.status_code == 422
+
+@pytest.mark.asyncio
+async def test_dedup_starts(client):
+    resp = await client.post("/api/volumes/traid_vg/btrfs/dedup")
+    assert resp.status_code == 202
+
+
+# ---------------------------------------------------------------------------
+# Btrfs quotas
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_quota_enable(client):
+    resp = await client.post("/api/volumes/traid_vg/btrfs/quotas/enable")
+    assert resp.status_code == 200
+
+@pytest.mark.asyncio
+async def test_quota_list(client):
+    resp = await client.get("/api/volumes/traid_vg/btrfs/quotas")
+    assert resp.status_code == 200
+    assert "quotas" in resp.json()
+
+@pytest.mark.asyncio
+async def test_quota_set_valid(client):
+    resp = await client.post("/api/volumes/traid_vg/btrfs/quotas",
+                             json={"qgroup": "0/256", "limit_bytes": 1073741824})
+    assert resp.status_code == 200
+
+@pytest.mark.asyncio
+async def test_quota_set_invalid_qgroup(client):
+    resp = await client.post("/api/volumes/traid_vg/btrfs/quotas",
+                             json={"qgroup": "bad", "limit_bytes": 1024})
+    assert resp.status_code == 422
+
+@pytest.mark.asyncio
+async def test_quota_set_negative_limit(client):
+    resp = await client.post("/api/volumes/traid_vg/btrfs/quotas",
+                             json={"qgroup": "0/5", "limit_bytes": -1})
+    assert resp.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# Btrfs usage / send / receive
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_btrfs_usage(client):
+    resp = await client.get("/api/volumes/traid_vg/btrfs/usage")
+    assert resp.status_code == 200
+
+@pytest.mark.asyncio
+async def test_btrfs_send_valid(client):
+    resp = await client.post("/api/volumes/traid_vg/btrfs/send",
+                             json={"snapshot_path": "snaps/ro1", "dest_file": "backup.btrfs"})
+    assert resp.status_code == 202
+
+@pytest.mark.asyncio
+async def test_btrfs_send_with_parent(client):
+    resp = await client.post("/api/volumes/traid_vg/btrfs/send",
+                             json={"snapshot_path": "snaps/ro2", "dest_file": "incr.btrfs",
+                                   "parent_path": "snaps/ro1"})
+    assert resp.status_code == 202
+
+@pytest.mark.asyncio
+async def test_btrfs_send_bad_dest_rejected(client):
+    resp = await client.post("/api/volumes/traid_vg/btrfs/send",
+                             json={"snapshot_path": "snaps/ro1", "dest_file": "backup.tar"})
+    assert resp.status_code == 422
+
+@pytest.mark.asyncio
+async def test_btrfs_send_traversal_rejected(client):
+    resp = await client.post("/api/volumes/traid_vg/btrfs/send",
+                             json={"snapshot_path": "../etc", "dest_file": "out.btrfs"})
+    assert resp.status_code == 422
+
+@pytest.mark.asyncio
+async def test_btrfs_receive_valid(client):
+    resp = await client.post("/api/volumes/traid_vg/btrfs/receive",
+                             json={"source_file": "backup.btrfs"})
+    assert resp.status_code == 202
+
+@pytest.mark.asyncio
+async def test_btrfs_receive_bad_file_rejected(client):
+    resp = await client.post("/api/volumes/traid_vg/btrfs/receive",
+                             json={"source_file": "backup.zip"})
+    assert resp.status_code == 422

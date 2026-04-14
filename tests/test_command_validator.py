@@ -606,3 +606,282 @@ def test_dev_null_rejected():
 def test_dev_zero_rejected():
     with pytest.raises(ValidationError):
         validate_request({"action": "disk_erase", "params": {"disk": "/dev/zero"}})
+
+
+# ---------------------------------------------------------------------------
+# Filesystem actions
+# ---------------------------------------------------------------------------
+
+def test_fs_format_ext4():
+    action, params = validate_request({"action": "fs_format",
+                                       "params": {"vg_name": "traid_vg", "fstype": "ext4"}})
+    assert action == "fs_format"
+    assert params["vg_name"] == "traid_vg"
+    assert params["fstype"] == "ext4"
+
+def test_fs_format_btrfs_with_compression():
+    _, params = validate_request({"action": "fs_format",
+                                  "params": {"vg_name": "traid_vg", "fstype": "btrfs",
+                                             "label": "data", "compression": "zstd"}})
+    assert params["fstype"] == "btrfs"
+    assert params["compression"] == "zstd"
+
+def test_fs_format_invalid_fstype_rejected():
+    with pytest.raises(ValidationError):
+        validate_request({"action": "fs_format",
+                          "params": {"vg_name": "traid_vg", "fstype": "xfs"}})
+
+def test_fs_format_invalid_vg_rejected():
+    with pytest.raises(ValidationError):
+        validate_request({"action": "fs_format",
+                          "params": {"vg_name": "0bad", "fstype": "ext4"}})
+
+def test_fs_format_invalid_compression_rejected():
+    with pytest.raises(ValidationError):
+        validate_request({"action": "fs_format",
+                          "params": {"vg_name": "traid_vg", "fstype": "btrfs",
+                                     "compression": "gzip"}})
+
+def test_fs_mount_valid():
+    action, params = validate_request({"action": "fs_mount",
+                                       "params": {"vg_name": "traid_vg"}})
+    assert action == "fs_mount"
+    assert params["vg_name"] == "traid_vg"
+
+def test_fs_unmount_valid():
+    action, params = validate_request({"action": "fs_unmount",
+                                       "params": {"vg_name": "traid_vg"}})
+    assert action == "fs_unmount"
+    assert params["vg_name"] == "traid_vg"
+
+def test_fs_info_valid():
+    action, params = validate_request({"action": "fs_info",
+                                       "params": {"vg_name": "traid_vg"}})
+    assert action == "fs_info"
+    assert params["vg_name"] == "traid_vg"
+
+def test_fs_set_compression_valid():
+    _, params = validate_request({"action": "fs_set_compression",
+                                  "params": {"vg_name": "traid_vg", "compression": "zstd"}})
+    assert params["compression"] == "zstd"
+
+def test_fs_set_compression_invalid():
+    with pytest.raises(ValidationError):
+        validate_request({"action": "fs_set_compression",
+                          "params": {"vg_name": "traid_vg", "compression": "bzip2"}})
+
+
+# ---------------------------------------------------------------------------
+# Btrfs subvolume actions
+# ---------------------------------------------------------------------------
+
+def test_btrfs_subvol_list():
+    action, params = validate_request({"action": "btrfs_subvol_list",
+                                       "params": {"vg_name": "traid_vg"}})
+    assert action == "btrfs_subvol_list"
+    assert params["vg_name"] == "traid_vg"
+
+def test_btrfs_subvol_create_valid():
+    _, params = validate_request({"action": "btrfs_subvol_create",
+                                  "params": {"vg_name": "traid_vg", "name": "snapshots"}})
+    assert params["name"] == "snapshots"
+
+def test_btrfs_subvol_create_traversal_rejected():
+    with pytest.raises(ValidationError):
+        validate_request({"action": "btrfs_subvol_create",
+                          "params": {"vg_name": "traid_vg", "name": "../etc"}})
+
+def test_btrfs_subvol_delete_valid():
+    _, params = validate_request({"action": "btrfs_subvol_delete",
+                                  "params": {"vg_name": "traid_vg", "path": "snapshots/snap1"}})
+    assert params["path"] == "snapshots/snap1"
+
+def test_btrfs_subvol_delete_recursive():
+    _, params = validate_request({"action": "btrfs_subvol_delete",
+                                  "params": {"vg_name": "traid_vg", "path": "snapshots",
+                                             "recursive": True}})
+    assert params["recursive"] is True
+
+def test_btrfs_subvol_delete_traversal_rejected():
+    with pytest.raises(ValidationError):
+        validate_request({"action": "btrfs_subvol_delete",
+                          "params": {"vg_name": "traid_vg", "path": "../../etc"}})
+
+def test_btrfs_snapshot_create_valid():
+    _, params = validate_request({"action": "btrfs_snapshot_create",
+                                  "params": {"vg_name": "traid_vg",
+                                             "source_path": "data",
+                                             "dest_path": "snaps/s1",
+                                             "readonly": True}})
+    assert params["readonly"] is True
+
+def test_btrfs_snapshot_traversal_rejected():
+    with pytest.raises(ValidationError):
+        validate_request({"action": "btrfs_snapshot_create",
+                          "params": {"vg_name": "traid_vg",
+                                     "source_path": "../escape",
+                                     "dest_path": "snaps/s1"}})
+
+def test_btrfs_subvol_set_default_valid():
+    _, params = validate_request({"action": "btrfs_subvol_set_default",
+                                  "params": {"vg_name": "traid_vg", "subvol_id": 256}})
+    assert params["subvol_id"] == 256
+
+
+# ---------------------------------------------------------------------------
+# Btrfs scrub / balance / defrag / dedup
+# ---------------------------------------------------------------------------
+
+def test_btrfs_scrub_start():
+    action, params = validate_request({"action": "btrfs_scrub_start",
+                                       "params": {"vg_name": "traid_vg"}})
+    assert action == "btrfs_scrub_start"
+    assert params["vg_name"] == "traid_vg"
+
+def test_btrfs_scrub_status():
+    action, params = validate_request({"action": "btrfs_scrub_status",
+                                       "params": {"vg_name": "traid_vg"}})
+    assert action == "btrfs_scrub_status"
+    assert params["vg_name"] == "traid_vg"
+
+def test_btrfs_scrub_cancel():
+    action, params = validate_request({"action": "btrfs_scrub_cancel",
+                                       "params": {"vg_name": "traid_vg"}})
+    assert action == "btrfs_scrub_cancel"
+    assert params["vg_name"] == "traid_vg"
+
+def test_btrfs_balance_start_no_filters():
+    action, params = validate_request({"action": "btrfs_balance_start",
+                                       "params": {"vg_name": "traid_vg"}})
+    assert action == "btrfs_balance_start"
+    assert params["vg_name"] == "traid_vg"
+
+def test_btrfs_balance_start_with_filter():
+    _, params = validate_request({"action": "btrfs_balance_start",
+                                  "params": {"vg_name": "traid_vg",
+                                             "usage_filter": 50, "metadata_usage": 80}})
+    assert params["usage_filter"] == 50
+
+def test_btrfs_balance_status():
+    action, params = validate_request({"action": "btrfs_balance_status",
+                                       "params": {"vg_name": "traid_vg"}})
+    assert action == "btrfs_balance_status"
+    assert params["vg_name"] == "traid_vg"
+
+def test_btrfs_balance_cancel():
+    action, params = validate_request({"action": "btrfs_balance_cancel",
+                                       "params": {"vg_name": "traid_vg"}})
+    assert action == "btrfs_balance_cancel"
+    assert params["vg_name"] == "traid_vg"
+
+def test_btrfs_defrag_defaults():
+    action, params = validate_request({"action": "btrfs_defrag",
+                                       "params": {"vg_name": "traid_vg"}})
+    assert action == "btrfs_defrag"
+    assert params["vg_name"] == "traid_vg"
+
+def test_btrfs_defrag_with_path():
+    _, params = validate_request({"action": "btrfs_defrag",
+                                  "params": {"vg_name": "traid_vg", "path": "subvol1",
+                                             "compression": "zstd", "recursive": False}})
+    assert params["compression"] == "zstd"
+
+def test_btrfs_defrag_traversal_rejected():
+    with pytest.raises(ValidationError):
+        validate_request({"action": "btrfs_defrag",
+                          "params": {"vg_name": "traid_vg", "path": "../secret"}})
+
+def test_btrfs_defrag_bad_compression_rejected():
+    with pytest.raises(ValidationError):
+        validate_request({"action": "btrfs_defrag",
+                          "params": {"vg_name": "traid_vg", "compression": "bzip2"}})
+
+def test_btrfs_dedup_valid():
+    action, params = validate_request({"action": "btrfs_dedup",
+                                       "params": {"vg_name": "traid_vg"}})
+    assert action == "btrfs_dedup"
+    assert params["vg_name"] == "traid_vg"
+
+
+# ---------------------------------------------------------------------------
+# Btrfs quota / usage / send / receive
+# ---------------------------------------------------------------------------
+
+def test_btrfs_quota_enable():
+    action, params = validate_request({"action": "btrfs_quota_enable",
+                                       "params": {"vg_name": "traid_vg"}})
+    assert action == "btrfs_quota_enable"
+    assert params["vg_name"] == "traid_vg"
+
+def test_btrfs_quota_list():
+    action, params = validate_request({"action": "btrfs_quota_list",
+                                       "params": {"vg_name": "traid_vg"}})
+    assert action == "btrfs_quota_list"
+    assert params["vg_name"] == "traid_vg"
+
+def test_btrfs_quota_set_valid():
+    _, params = validate_request({"action": "btrfs_quota_set",
+                                  "params": {"vg_name": "traid_vg",
+                                             "qgroup": "0/256", "limit_bytes": 1073741824}})
+    assert params["qgroup"] == "0/256"
+    assert params["limit_bytes"] == 1073741824
+
+def test_btrfs_quota_set_invalid_qgroup():
+    with pytest.raises(ValidationError):
+        validate_request({"action": "btrfs_quota_set",
+                          "params": {"vg_name": "traid_vg",
+                                     "qgroup": "bad", "limit_bytes": 1024}})
+
+def test_btrfs_quota_set_negative_limit_rejected():
+    with pytest.raises(ValidationError):
+        validate_request({"action": "btrfs_quota_set",
+                          "params": {"vg_name": "traid_vg",
+                                     "qgroup": "0/5", "limit_bytes": -1}})
+
+def test_btrfs_usage_detail():
+    action, params = validate_request({"action": "btrfs_usage_detail",
+                                       "params": {"vg_name": "traid_vg"}})
+    assert action == "btrfs_usage_detail"
+    assert params["vg_name"] == "traid_vg"
+
+def test_btrfs_send_valid():
+    _, params = validate_request({"action": "btrfs_send",
+                                  "params": {"vg_name": "traid_vg",
+                                             "snapshot_path": "snaps/ro1",
+                                             "dest_file": "backup.btrfs"}})
+    assert params["dest_file"] == "backup.btrfs"
+    assert params.get("parent_path") is None
+
+def test_btrfs_send_with_parent():
+    _, params = validate_request({"action": "btrfs_send",
+                                  "params": {"vg_name": "traid_vg",
+                                             "snapshot_path": "snaps/ro2",
+                                             "dest_file": "incr.btrfs",
+                                             "parent_path": "snaps/ro1"}})
+    assert params["parent_path"] == "snaps/ro1"
+
+def test_btrfs_send_bad_dest_rejected():
+    with pytest.raises(ValidationError):
+        validate_request({"action": "btrfs_send",
+                          "params": {"vg_name": "traid_vg",
+                                     "snapshot_path": "snaps/ro1",
+                                     "dest_file": "backup.tar"}})
+
+def test_btrfs_send_snapshot_traversal_rejected():
+    with pytest.raises(ValidationError):
+        validate_request({"action": "btrfs_send",
+                          "params": {"vg_name": "traid_vg",
+                                     "snapshot_path": "../etc",
+                                     "dest_file": "out.btrfs"}})
+
+def test_btrfs_receive_valid():
+    _, params = validate_request({"action": "btrfs_receive",
+                                  "params": {"vg_name": "traid_vg",
+                                             "source_file": "backup.btrfs"}})
+    assert params["source_file"] == "backup.btrfs"
+
+def test_btrfs_receive_bad_file_rejected():
+    with pytest.raises(ValidationError):
+        validate_request({"action": "btrfs_receive",
+                          "params": {"vg_name": "traid_vg",
+                                     "source_file": "backup.zip"}})

@@ -7,9 +7,19 @@ from api.models import (
     ArrayCreationRequest,
     BadblocksRequest,
     BackupRequest,
+    BtrfsBalanceRequest,
+    BtrfsDefragRequest,
+    BtrfsQuotaSetRequest,
+    BtrfsReceiveRequest,
+    BtrfsSendRequest,
+    BtrfsSnapshotRequest,
+    BtrfsSubvolCreateRequest,
+    BtrfsSubvolDeleteRequest,
     CloneRequest,
+    CompressionRequest,
     DiskInfo,
     EraseRequest,
+    FormatRequest,
     GrowRequest,
     JobAccepted,
     MigrateRequest,
@@ -354,3 +364,229 @@ def test_capacity_preview_valid():
 def test_capacity_preview_empty_groups():
     cp = CapacityPreview(usable_bytes=0, redundancy_disks=2, raid_groups=[])
     assert cp.raid_groups == []
+
+
+# ---------------------------------------------------------------------------
+# FormatRequest
+# ---------------------------------------------------------------------------
+
+def test_format_ext4():
+    r = FormatRequest(fstype="ext4")
+    assert r.fstype == "ext4"
+    assert r.label == ""
+    assert r.compression == ""
+
+def test_format_btrfs_with_label():
+    r = FormatRequest(fstype="btrfs", label="data", compression="zstd")
+    assert r.fstype == "btrfs"
+    assert r.label == "data"
+    assert r.compression == "zstd"
+
+def test_format_btrfs_lzo():
+    r = FormatRequest(fstype="btrfs", compression="lzo")
+    assert r.compression == "lzo"
+
+def test_format_btrfs_zlib():
+    r = FormatRequest(fstype="btrfs", compression="zlib")
+    assert r.compression == "zlib"
+
+def test_format_btrfs_none_compression():
+    r = FormatRequest(fstype="btrfs", compression="none")
+    assert r.compression == "none"
+
+def test_format_invalid_fstype_rejected():
+    with pytest.raises(ValidationError):
+        FormatRequest(fstype="xfs")
+
+def test_format_invalid_compression_rejected():
+    with pytest.raises(ValidationError):
+        FormatRequest(fstype="btrfs", compression="gzip")
+
+
+# ---------------------------------------------------------------------------
+# BtrfsSubvolCreateRequest
+# ---------------------------------------------------------------------------
+
+def test_subvol_create_simple():
+    r = BtrfsSubvolCreateRequest(name="snapshots")
+    assert r.name == "snapshots"
+
+def test_subvol_create_nested():
+    r = BtrfsSubvolCreateRequest(name="data/subvol1")
+    assert r.name == "data/subvol1"
+
+def test_subvol_create_traversal_rejected():
+    with pytest.raises(ValidationError):
+        BtrfsSubvolCreateRequest(name="../etc")
+
+def test_subvol_create_empty_rejected():
+    with pytest.raises(ValidationError):
+        BtrfsSubvolCreateRequest(name="")
+
+
+# ---------------------------------------------------------------------------
+# BtrfsSubvolDeleteRequest
+# ---------------------------------------------------------------------------
+
+def test_subvol_delete_simple():
+    r = BtrfsSubvolDeleteRequest(path="snapshots/snap1")
+    assert r.recursive is False
+
+def test_subvol_delete_recursive():
+    r = BtrfsSubvolDeleteRequest(path="snapshots", recursive=True)
+    assert r.recursive is True
+
+def test_subvol_delete_traversal_rejected():
+    with pytest.raises(ValidationError):
+        BtrfsSubvolDeleteRequest(path="../secret")
+
+
+# ---------------------------------------------------------------------------
+# BtrfsSnapshotRequest
+# ---------------------------------------------------------------------------
+
+def test_snapshot_create():
+    r = BtrfsSnapshotRequest(source_path="data", dest_path="snapshots/snap1")
+    assert r.readonly is False
+
+def test_snapshot_create_readonly():
+    r = BtrfsSnapshotRequest(source_path="data", dest_path="snaps/ro", readonly=True)
+    assert r.readonly is True
+
+def test_snapshot_traversal_rejected():
+    with pytest.raises(ValidationError):
+        BtrfsSnapshotRequest(source_path="../etc", dest_path="snaps/s1")
+
+def test_snapshot_dest_traversal_rejected():
+    with pytest.raises(ValidationError):
+        BtrfsSnapshotRequest(source_path="data", dest_path="../escape")
+
+
+# ---------------------------------------------------------------------------
+# BtrfsBalanceRequest
+# ---------------------------------------------------------------------------
+
+def test_balance_no_filters():
+    r = BtrfsBalanceRequest()
+    assert r.usage_filter is None
+    assert r.metadata_usage is None
+
+def test_balance_with_usage_filter():
+    r = BtrfsBalanceRequest(usage_filter=50)
+    assert r.usage_filter == 50
+
+def test_balance_with_both_filters():
+    r = BtrfsBalanceRequest(usage_filter=75, metadata_usage=80)
+    assert r.usage_filter == 75
+    assert r.metadata_usage == 80
+
+
+# ---------------------------------------------------------------------------
+# BtrfsDefragRequest
+# ---------------------------------------------------------------------------
+
+def test_defrag_defaults():
+    r = BtrfsDefragRequest()
+    assert r.path == ""
+    assert r.recursive is True
+    assert r.compression == ""
+
+def test_defrag_with_path_and_compression():
+    r = BtrfsDefragRequest(path="subvol1", recursive=False, compression="zstd")
+    assert r.path == "subvol1"
+    assert r.compression == "zstd"
+
+def test_defrag_invalid_compression():
+    with pytest.raises(ValidationError):
+        BtrfsDefragRequest(compression="bzip2")
+
+def test_defrag_traversal_rejected():
+    with pytest.raises(ValidationError):
+        BtrfsDefragRequest(path="../etc")
+
+
+# ---------------------------------------------------------------------------
+# BtrfsQuotaSetRequest
+# ---------------------------------------------------------------------------
+
+def test_quota_set_valid():
+    r = BtrfsQuotaSetRequest(qgroup="0/5", limit_bytes=1073741824)
+    assert r.qgroup == "0/5"
+    assert r.limit_bytes == 1073741824
+
+def test_quota_set_invalid_qgroup():
+    with pytest.raises(ValidationError):
+        BtrfsQuotaSetRequest(qgroup="bad", limit_bytes=1024)
+
+def test_quota_set_negative_limit():
+    with pytest.raises(ValidationError):
+        BtrfsQuotaSetRequest(qgroup="0/5", limit_bytes=-1)
+
+def test_quota_set_zero_limit_allowed():
+    r = BtrfsQuotaSetRequest(qgroup="1/256", limit_bytes=0)
+    assert r.limit_bytes == 0
+
+
+# ---------------------------------------------------------------------------
+# BtrfsSendRequest
+# ---------------------------------------------------------------------------
+
+def test_send_valid():
+    r = BtrfsSendRequest(snapshot_path="snaps/ro1", dest_file="backup.btrfs")
+    assert r.parent_path is None
+
+def test_send_with_parent():
+    r = BtrfsSendRequest(snapshot_path="snaps/ro2", dest_file="incr.btrfs",
+                         parent_path="snaps/ro1")
+    assert r.parent_path == "snaps/ro1"
+
+def test_send_dest_file_must_end_btrfs():
+    with pytest.raises(ValidationError):
+        BtrfsSendRequest(snapshot_path="snaps/ro1", dest_file="backup.tar")
+
+def test_send_snapshot_traversal_rejected():
+    with pytest.raises(ValidationError):
+        BtrfsSendRequest(snapshot_path="../secret", dest_file="out.btrfs")
+
+def test_send_parent_traversal_rejected():
+    with pytest.raises(ValidationError):
+        BtrfsSendRequest(snapshot_path="snaps/ro1", dest_file="out.btrfs",
+                         parent_path="../escape")
+
+
+# ---------------------------------------------------------------------------
+# BtrfsReceiveRequest
+# ---------------------------------------------------------------------------
+
+def test_receive_valid():
+    r = BtrfsReceiveRequest(source_file="backup.btrfs")
+    assert r.source_file == "backup.btrfs"
+
+def test_receive_must_end_btrfs():
+    with pytest.raises(ValidationError):
+        BtrfsReceiveRequest(source_file="backup.zip")
+
+def test_receive_no_path_separators():
+    with pytest.raises(ValidationError):
+        BtrfsReceiveRequest(source_file="path/to/backup.btrfs")
+
+
+# ---------------------------------------------------------------------------
+# CompressionRequest
+# ---------------------------------------------------------------------------
+
+def test_compression_zstd():
+    r = CompressionRequest(compression="zstd")
+    assert r.compression == "zstd"
+
+def test_compression_none():
+    r = CompressionRequest(compression="none")
+    assert r.compression == "none"
+
+def test_compression_empty_string():
+    r = CompressionRequest(compression="")
+    assert r.compression == ""
+
+def test_compression_invalid():
+    with pytest.raises(ValidationError):
+        CompressionRequest(compression="gzip")

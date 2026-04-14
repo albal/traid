@@ -14,7 +14,9 @@ StandardError=journal
 SyslogIdentifier=traid-worker
 
 # Security hardening
-PrivateTmp=yes
+# NOTE: PrivateTmp cannot be used here — it creates a private (slave) mount
+# namespace that prevents mounts made by this daemon from propagating to the
+# host filesystem, breaking /mnt/traid volume management.
 NoNewPrivileges=no
 
 [Install]
