@@ -4,6 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>TRAID — TSEW RAID Manager</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
   <script src="https://cdn.tailwindcss.com"></script>
   <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
   <script>
@@ -27,6 +28,7 @@
 ========================================================= -->
 <header class="bg-gray-800 border-b border-gray-700 px-6 py-3 flex items-center justify-between">
   <div class="flex items-center gap-3">
+    <img src="/favicon.ico" alt="TRAID" class="w-6 h-6" />
     <span class="text-blue-400 font-bold text-lg tracking-tight">TRAID</span>
     <span class="text-gray-500 text-xs">TSEW RAID Manager</span>
   </div>
@@ -251,8 +253,8 @@
                  :style="`width: ${disk.available ? 0 : 100}%`"></div>
           </div>
           <div class="mt-1 text-xs text-gray-500" x-text="disk.fstype || disk.mountpoint || '—'"></div>
-          <!-- Actions for free disks -->
-          <div x-show="disk.available" class="mt-2 grid grid-cols-2 gap-1">
+          <!-- SMART tests available on all disks -->
+          <div class="mt-2 grid grid-cols-2 gap-1">
             <button @click.stop="openDiskAction('smart_short', disk.name)"
                     class="text-xs px-1 py-0.5 rounded bg-gray-700 hover:bg-blue-800 text-gray-400 hover:text-white transition-colors">
               SMART Short
@@ -261,14 +263,19 @@
                     class="text-xs px-1 py-0.5 rounded bg-gray-700 hover:bg-blue-800 text-gray-400 hover:text-white transition-colors">
               SMART Long
             </button>
-            <button @click.stop="openDiskAction('badblocks', disk.name)"
-                    class="text-xs px-1 py-0.5 rounded bg-gray-700 hover:bg-yellow-900 text-gray-400 hover:text-yellow-300 transition-colors">
-              Badblocks
-            </button>
-            <button @click.stop="openDiskAction('erase', disk.name)"
-                    class="text-xs px-1 py-0.5 rounded bg-gray-700 hover:bg-red-900 text-gray-400 hover:text-red-400 transition-colors">
-              Erase
-            </button>
+            <!-- Badblocks and Erase only for free disks -->
+            <template x-if="disk.available">
+              <button @click.stop="openDiskAction('badblocks', disk.name)"
+                      class="text-xs px-1 py-0.5 rounded bg-gray-700 hover:bg-yellow-900 text-gray-400 hover:text-yellow-300 transition-colors">
+                Badblocks
+              </button>
+            </template>
+            <template x-if="disk.available">
+              <button @click.stop="openDiskAction('erase', disk.name)"
+                      class="text-xs px-1 py-0.5 rounded bg-gray-700 hover:bg-red-900 text-gray-400 hover:text-red-400 transition-colors">
+                Erase
+              </button>
+            </template>
           </div>
         </div>
       </template>
@@ -378,6 +385,65 @@
                   <span class="text-xs font-mono bg-gray-700 text-blue-300 px-1.5 py-0.5 rounded" x-text="d"></span>
                 </template>
               </div>
+            </div>
+
+            <!-- Filesystem section -->
+            <div class="mt-3 pt-3 border-t border-gray-700">
+              <template x-if="!fsData[vg.vg_name] || !fsData[vg.vg_name].formatted">
+                <div class="flex items-center justify-between">
+                  <span class="text-xs text-gray-500">No filesystem</span>
+                  <button @click="openFormatModal(vg.vg_name)"
+                          class="text-xs px-2 py-1 rounded bg-indigo-700 hover:bg-indigo-600 text-white transition-colors">
+                    Format Volume
+                  </button>
+                </div>
+              </template>
+              <template x-if="fsData[vg.vg_name] && fsData[vg.vg_name].formatted">
+                <div>
+                  <!-- FS type badge + mount status + actions -->
+                  <div class="flex items-center justify-between mb-2">
+                    <div class="flex items-center gap-2">
+                      <span class="text-xs font-mono font-semibold px-1.5 py-0.5 rounded"
+                            :class="fsData[vg.vg_name].fstype === 'btrfs' ? 'bg-orange-900/50 text-orange-300' : 'bg-blue-900/50 text-blue-300'"
+                            x-text="(fsData[vg.vg_name].fstype || '').toUpperCase()"></span>
+                      <span class="text-xs"
+                            :class="fsData[vg.vg_name].mounted ? 'text-green-400' : 'text-gray-500'"
+                            x-text="fsData[vg.vg_name].mounted ? 'Mounted' : 'Unmounted'"></span>
+                      <span x-show="fsData[vg.vg_name].label"
+                            class="text-xs text-gray-500 font-mono"
+                            x-text="'«' + fsData[vg.vg_name].label + '»'"></span>
+                    </div>
+                    <div class="flex items-center gap-1">
+                      <button @click="fsMountToggle(vg.vg_name)"
+                              class="text-xs px-2 py-0.5 rounded bg-gray-700 hover:bg-gray-600 text-gray-300 transition-colors"
+                              x-text="fsData[vg.vg_name].mounted ? 'Unmount' : 'Mount'"></button>
+                      <button x-show="fsData[vg.vg_name].mounted"
+                              @click="openFsModal(vg.vg_name)"
+                              class="text-xs px-2 py-0.5 rounded bg-indigo-700 hover:bg-indigo-600 text-white transition-colors">
+                        Manage
+                      </button>
+                    </div>
+                  </div>
+                  <!-- Filesystem space bar (only when mounted) -->
+                  <template x-if="fsData[vg.vg_name].mounted && fsData[vg.vg_name].total_bytes">
+                    <div>
+                      <div class="h-1.5 bg-gray-700 rounded-full overflow-hidden">
+                        <div class="h-full rounded-full transition-all"
+                             :class="(fsData[vg.vg_name].use_pct || 0) > 85 ? 'bg-red-500' : 'bg-indigo-500'"
+                             :style="`width: ${fsData[vg.vg_name].use_pct || 0}%`"></div>
+                      </div>
+                      <div class="mt-0.5 flex justify-between text-xs text-gray-500">
+                        <span x-text="humanSize(fsData[vg.vg_name].used_bytes) + ' used'"></span>
+                        <span x-text="humanSize(fsData[vg.vg_name].avail_bytes) + ' free'"></span>
+                        <span x-text="(fsData[vg.vg_name].use_pct || 0) + '%'"></span>
+                      </div>
+                      <div x-show="fsData[vg.vg_name].inodes_used != null"
+                           class="text-xs text-gray-600 mt-0.5"
+                           x-text="`${(fsData[vg.vg_name].inodes_used||0).toLocaleString()} files / ${(fsData[vg.vg_name].inodes_total||0).toLocaleString()} inodes`"></div>
+                    </div>
+                  </template>
+                </div>
+              </template>
             </div>
           </div>
         </template>
@@ -676,6 +742,453 @@
 </div>
 
 <!-- =========================================================
+     FORMAT VOLUME MODAL
+========================================================= -->
+<div x-show="formatModal"
+     x-transition:enter="transition ease-out duration-150"
+     x-transition:enter-start="opacity-0"
+     x-transition:enter-end="opacity-100"
+     x-transition:leave="transition ease-in duration-100"
+     x-transition:leave-start="opacity-100"
+     x-transition:leave-end="opacity-0"
+     class="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4">
+  <div @click.stop class="bg-gray-800 border border-gray-700 rounded-xl shadow-2xl w-full max-w-sm p-6">
+    <h2 class="text-base font-semibold text-gray-100 mb-1">Format Volume</h2>
+    <p class="text-xs text-gray-400 mb-4">
+      Volume: <span class="font-mono text-white" x-text="formatModal"></span>.
+      <strong class="text-red-400">Existing data will be destroyed.</strong>
+    </p>
+
+    <div class="space-y-3">
+      <div>
+        <label class="text-xs text-gray-400 block mb-1">Filesystem</label>
+        <select x-model="formatFstype"
+                class="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-sm text-gray-200">
+          <option value="ext4">ext4 — simple, reliable, widely supported</option>
+          <option value="btrfs">Btrfs — snapshots, compression, checksums</option>
+        </select>
+      </div>
+      <div>
+        <label class="text-xs text-gray-400 block mb-1">Label (optional)</label>
+        <input x-model="formatLabel" placeholder="data"
+               class="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-sm text-gray-200 focus:outline-none focus:border-blue-400" />
+      </div>
+      <div x-show="formatFstype === 'btrfs'">
+        <label class="text-xs text-gray-400 block mb-1">Compression</label>
+        <select x-model="formatCompression"
+                class="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-sm text-gray-200">
+          <option value="zstd">Zstd (recommended — best ratio/speed balance)</option>
+          <option value="lzo">LZO (fast, moderate ratio)</option>
+          <option value="zlib">Zlib (high ratio, slower)</option>
+          <option value="none">None (no compression)</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="flex gap-2 mt-5">
+      <button @click="formatModal = null" :disabled="formatBusy"
+              class="flex-1 px-3 py-1.5 rounded bg-gray-700 hover:bg-gray-600 text-sm text-gray-300 transition-colors disabled:opacity-40">
+        Cancel
+      </button>
+      <button @click="submitFormat()" :disabled="formatBusy"
+              class="flex-1 px-3 py-1.5 rounded bg-red-700 hover:bg-red-600 text-sm text-white transition-colors disabled:opacity-40">
+        <span x-show="!formatBusy">Format</span>
+        <span x-show="formatBusy">Formatting…</span>
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- =========================================================
+     FILESYSTEM MANAGER MODAL (full-screen)
+========================================================= -->
+<div x-show="fsModal"
+     x-transition:enter="transition ease-out duration-150"
+     x-transition:enter-start="opacity-0 scale-95"
+     x-transition:enter-end="opacity-100 scale-100"
+     x-transition:leave="transition ease-in duration-100"
+     x-transition:leave-start="opacity-100 scale-100"
+     x-transition:leave-end="opacity-0 scale-95"
+     class="fixed inset-0 bg-black/70 z-50 flex items-center justify-center p-4">
+  <div @click.stop class="bg-gray-800 border border-gray-700 rounded-xl shadow-2xl w-full max-w-3xl max-h-[90vh] flex flex-col">
+
+    <!-- Modal header -->
+    <div class="flex items-center justify-between px-5 py-4 border-b border-gray-700 shrink-0">
+      <div class="flex items-center gap-3">
+        <span class="text-base font-semibold text-gray-100" x-text="fsModal"></span>
+        <span class="text-xs font-mono px-1.5 py-0.5 rounded"
+              :class="(fsData[fsModal] || {}).fstype === 'btrfs' ? 'bg-orange-900/50 text-orange-300' : 'bg-blue-900/50 text-blue-300'"
+              x-text="((fsData[fsModal] || {}).fstype || '').toUpperCase()"></span>
+        <span class="text-xs"
+              :class="(fsData[fsModal] || {}).mounted ? 'text-green-400' : 'text-yellow-400'"
+              x-text="(fsData[fsModal] || {}).mounted ? '● Mounted' : '○ Unmounted'"></span>
+      </div>
+      <button @click="closeFsModal()" class="text-gray-400 hover:text-gray-200 text-xl leading-none">&times;</button>
+    </div>
+
+    <!-- Tabs -->
+    <div class="flex border-b border-gray-700 px-5 shrink-0 overflow-x-auto">
+      <template x-for="tab in ((fsData[fsModal] || {}).fstype === 'btrfs'
+        ? ['info','subvolumes','snapshots','scrub','balance','quotas','send-recv']
+        : ['info'])" :key="tab">
+        <button @click="fsTab = tab; tab === 'subvolumes' || tab === 'snapshots' ? loadBtrfsSubvols(fsModal) : (tab === 'quotas' ? loadBtrfsQuotas(fsModal) : null)"
+                :class="fsTab === tab ? 'border-b-2 border-indigo-400 text-indigo-300' : 'text-gray-400 hover:text-gray-200'"
+                class="text-xs px-3 py-2.5 whitespace-nowrap transition-colors capitalize"
+                x-text="tab.replace('-', '/')"></button>
+      </template>
+    </div>
+
+    <!-- Tab content -->
+    <div class="flex-1 overflow-y-auto p-5">
+
+      <!-- INFO TAB -->
+      <div x-show="fsTab === 'info'" class="space-y-4">
+        <div class="grid grid-cols-2 gap-3 text-sm">
+          <div class="bg-gray-700/50 rounded-lg p-3">
+            <div class="text-xs text-gray-400 mb-1">Total Size</div>
+            <div class="font-semibold" x-text="humanSize((fsData[fsModal] || {}).total_bytes || 0)"></div>
+          </div>
+          <div class="bg-gray-700/50 rounded-lg p-3">
+            <div class="text-xs text-gray-400 mb-1">Used</div>
+            <div class="font-semibold" x-text="humanSize((fsData[fsModal] || {}).used_bytes || 0) + ' (' + ((fsData[fsModal] || {}).use_pct || 0) + '%)'"></div>
+          </div>
+          <div class="bg-gray-700/50 rounded-lg p-3">
+            <div class="text-xs text-gray-400 mb-1">Free</div>
+            <div class="font-semibold text-green-400" x-text="humanSize((fsData[fsModal] || {}).avail_bytes || 0)"></div>
+          </div>
+          <div class="bg-gray-700/50 rounded-lg p-3">
+            <div class="text-xs text-gray-400 mb-1">Files (inodes used)</div>
+            <div class="font-semibold" x-text="((fsData[fsModal] || {}).inodes_used || 0).toLocaleString()"></div>
+          </div>
+          <div class="bg-gray-700/50 rounded-lg p-3" x-show="(fsData[fsModal] || {}).fstype === 'btrfs'">
+            <div class="text-xs text-gray-400 mb-1">Compression</div>
+            <div class="font-semibold font-mono" x-text="(fsData[fsModal] || {}).compression || 'none'"></div>
+          </div>
+          <div class="bg-gray-700/50 rounded-lg p-3" x-show="(fsData[fsModal] || {}).label">
+            <div class="text-xs text-gray-400 mb-1">Label</div>
+            <div class="font-semibold font-mono" x-text="(fsData[fsModal] || {}).label"></div>
+          </div>
+        </div>
+        <!-- Usage bar -->
+        <div x-show="(fsData[fsModal] || {}).total_bytes">
+          <div class="h-2 bg-gray-700 rounded-full overflow-hidden">
+            <div class="h-full rounded-full transition-all"
+                 :class="((fsData[fsModal] || {}).use_pct || 0) > 85 ? 'bg-red-500' : 'bg-indigo-500'"
+                 :style="`width: ${(fsData[fsModal] || {}).use_pct || 0}%`"></div>
+          </div>
+        </div>
+        <!-- Btrfs usage detail -->
+        <div x-show="(fsData[fsModal] || {}).fstype === 'btrfs' && (fsData[fsModal] || {}).btrfs_usage"
+             class="mt-3">
+          <div class="text-xs text-gray-400 mb-2 font-semibold">Btrfs Allocation Detail</div>
+          <div class="grid grid-cols-2 gap-2 text-xs font-mono">
+            <template x-for="[k, v] in Object.entries((fsData[fsModal] || {}).btrfs_usage || {})" :key="k">
+              <div class="flex justify-between bg-gray-700/40 rounded px-2 py-1">
+                <span class="text-gray-400 truncate mr-2" x-text="k"></span>
+                <span class="text-gray-200 shrink-0" x-text="humanSize(v)"></span>
+              </div>
+            </template>
+          </div>
+        </div>
+        <!-- Btrfs device stats -->
+        <div x-show="(fsData[fsModal] || {}).btrfs_device_stats && (fsData[fsModal] || {}).btrfs_device_stats.length > 0"
+             class="mt-3">
+          <div class="text-xs text-gray-400 mb-2 font-semibold">Device Error Counters</div>
+          <template x-for="dev in (fsData[fsModal] || {}).btrfs_device_stats || []" :key="dev.device">
+            <div class="text-xs bg-gray-700/40 rounded px-3 py-2 mb-1">
+              <div class="font-mono text-gray-300 mb-1" x-text="dev.device"></div>
+              <div class="grid grid-cols-3 gap-1">
+                <template x-for="[k, v] in Object.entries(dev).filter(([k]) => k !== 'device')" :key="k">
+                  <div class="flex justify-between">
+                    <span class="text-gray-500" x-text="k"></span>
+                    <span :class="v > 0 ? 'text-red-400 font-bold' : 'text-gray-400'" x-text="v"></span>
+                  </div>
+                </template>
+              </div>
+            </div>
+          </template>
+        </div>
+        <!-- Mount / compression controls -->
+        <div class="flex gap-2 pt-2">
+          <button @click="fsMountToggle(fsModal); loadFsInfo(fsModal)" :disabled="fsBusy"
+                  class="px-3 py-1.5 rounded text-xs transition-colors disabled:opacity-40"
+                  :class="(fsData[fsModal] || {}).mounted ? 'bg-gray-700 hover:bg-gray-600 text-gray-300' : 'bg-green-700 hover:bg-green-600 text-white'"
+                  x-text="(fsData[fsModal] || {}).mounted ? 'Unmount' : 'Mount'"></button>
+          <button @click="loadFsInfo(fsModal)" :disabled="fsBusy"
+                  class="px-3 py-1.5 rounded text-xs bg-gray-700 hover:bg-gray-600 text-gray-300 transition-colors">
+            Refresh
+          </button>
+        </div>
+        <!-- Btrfs compression change -->
+        <div x-show="(fsData[fsModal] || {}).fstype === 'btrfs'" class="flex gap-2 items-center pt-1">
+          <span class="text-xs text-gray-400">Compression:</span>
+          <select x-model="formatCompression"
+                  class="bg-gray-700 border border-gray-600 rounded px-2 py-1 text-xs text-gray-200">
+            <option value="zstd">zstd</option><option value="lzo">lzo</option>
+            <option value="zlib">zlib</option><option value="none">none</option>
+          </select>
+          <button @click="async () => { fsBusy=true; await fetch(`/api/volumes/${encodeURIComponent(fsModal)}/filesystem/compression`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({compression:formatCompression})}); fsBusy=false; loadFsInfo(fsModal) }"
+                  :disabled="fsBusy"
+                  class="px-2 py-1 rounded text-xs bg-indigo-700 hover:bg-indigo-600 text-white transition-colors disabled:opacity-40">
+            Apply
+          </button>
+        </div>
+      </div>
+
+      <!-- SUBVOLUMES TAB -->
+      <div x-show="fsTab === 'subvolumes'" class="space-y-3">
+        <div class="flex gap-2">
+          <input x-model="newSubvolName" placeholder="subvolume-name"
+                 class="flex-1 bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-sm text-gray-200 focus:outline-none focus:border-blue-400" />
+          <button @click="btrfsCreateSubvol(fsModal)" :disabled="fsBusy || !newSubvolName"
+                  class="px-3 py-1.5 rounded text-xs bg-indigo-700 hover:bg-indigo-600 text-white transition-colors disabled:opacity-40">
+            + Create
+          </button>
+        </div>
+        <div x-show="(btrfsSubvols[fsModal] || []).length === 0"
+             class="text-center text-gray-500 text-sm py-6">No subvolumes.</div>
+        <template x-for="sv in (btrfsSubvols[fsModal] || []).filter(s => !s.is_snapshot)" :key="sv.id">
+          <div class="bg-gray-700/50 rounded-lg px-3 py-2 flex items-center justify-between">
+            <div>
+              <span class="text-sm font-mono text-gray-200" x-text="sv.path"></span>
+              <span class="ml-2 text-xs text-gray-500" x-text="'ID ' + sv.id"></span>
+            </div>
+            <div class="flex gap-1">
+              <button @click="btrfsSetDefault(fsModal, sv.id)" :disabled="fsBusy"
+                      class="text-xs px-2 py-0.5 rounded bg-gray-600 hover:bg-gray-500 text-gray-300 transition-colors" title="Set as default">
+                Default
+              </button>
+              <button @click="btrfsDeleteSubvol(fsModal, sv.path, false)" :disabled="fsBusy"
+                      class="text-xs px-2 py-0.5 rounded bg-red-900/60 hover:bg-red-800/60 text-red-400 transition-colors">
+                Delete
+              </button>
+            </div>
+          </div>
+        </template>
+      </div>
+
+      <!-- SNAPSHOTS TAB -->
+      <div x-show="fsTab === 'snapshots'" class="space-y-3">
+        <div class="bg-gray-700/30 rounded-lg p-3 space-y-2">
+          <div class="text-xs text-gray-400 font-semibold mb-2">Create Snapshot</div>
+          <div class="flex gap-2 items-center">
+            <span class="text-xs text-gray-400 w-24">Source path</span>
+            <input x-model="newSnapSrc" placeholder="subvol-name"
+                   class="flex-1 bg-gray-700 border border-gray-600 rounded px-2 py-1 text-xs text-gray-200 focus:outline-none focus:border-blue-400" />
+          </div>
+          <div class="flex gap-2 items-center">
+            <span class="text-xs text-gray-400 w-24">Dest path</span>
+            <input x-model="newSnapDest" placeholder="snapshots/snap-2024-01-01"
+                   class="flex-1 bg-gray-700 border border-gray-600 rounded px-2 py-1 text-xs text-gray-200 focus:outline-none focus:border-blue-400" />
+          </div>
+          <div class="flex gap-3 items-center">
+            <label class="flex items-center gap-1.5 text-xs text-gray-300 cursor-pointer">
+              <input type="checkbox" x-model="newSnapReadonly" class="accent-indigo-500" />
+              Read-only snapshot
+            </label>
+            <button @click="btrfsCreateSnapshot(fsModal)" :disabled="fsBusy || !newSnapSrc || !newSnapDest"
+                    class="px-3 py-1 rounded text-xs bg-indigo-700 hover:bg-indigo-600 text-white transition-colors disabled:opacity-40">
+              Snapshot
+            </button>
+          </div>
+        </div>
+        <div class="text-xs text-gray-400 font-semibold">Existing Snapshots</div>
+        <div x-show="(btrfsSubvols[fsModal] || []).filter(s => s.is_snapshot).length === 0"
+             class="text-center text-gray-500 text-sm py-4">No snapshots.</div>
+        <template x-for="sv in (btrfsSubvols[fsModal] || []).filter(s => s.is_snapshot)" :key="sv.id">
+          <div class="bg-gray-700/50 rounded-lg px-3 py-2 flex items-center justify-between">
+            <div>
+              <span class="text-sm font-mono text-gray-200" x-text="sv.path"></span>
+              <span class="ml-2 text-xs text-indigo-400">snapshot</span>
+              <span class="ml-1 text-xs text-gray-500" x-text="'ID ' + sv.id"></span>
+            </div>
+            <button @click="btrfsDeleteSubvol(fsModal, sv.path, true)" :disabled="fsBusy"
+                    class="text-xs px-2 py-0.5 rounded bg-red-900/60 hover:bg-red-800/60 text-red-400 transition-colors">
+              Delete
+            </button>
+          </div>
+        </template>
+      </div>
+
+      <!-- SCRUB TAB -->
+      <div x-show="fsTab === 'scrub'" class="space-y-4">
+        <div class="text-xs text-gray-400">Scrub reads all data and verifies checksums against parity. Runs in background — check the task monitor for progress.</div>
+        <div class="flex gap-2">
+          <button @click="btrfsScrubStart(fsModal)" :disabled="fsBusy"
+                  class="px-4 py-2 rounded text-sm bg-indigo-700 hover:bg-indigo-600 text-white transition-colors disabled:opacity-40">
+            Start Scrub
+          </button>
+          <button @click="btrfsScrubCancel(fsModal)"
+                  class="px-4 py-2 rounded text-sm bg-gray-700 hover:bg-gray-600 text-gray-300 transition-colors">
+            Cancel Scrub
+          </button>
+          <button @click="btrfsScrubStatus(fsModal)"
+                  class="px-4 py-2 rounded text-sm bg-gray-700 hover:bg-gray-600 text-gray-300 transition-colors">
+            Refresh Status
+          </button>
+        </div>
+        <div x-show="scrubStatus[fsModal]"
+             class="bg-gray-900 rounded-lg p-3 font-mono text-xs text-gray-300 whitespace-pre-wrap"
+             x-text="scrubStatus[fsModal]"></div>
+      </div>
+
+      <!-- BALANCE TAB -->
+      <div x-show="fsTab === 'balance'" class="space-y-4">
+        <div class="text-xs text-gray-400">Balance redistributes data chunks across devices. Useful after adding disks or reclaiming space. Use the usage filter to balance only partially-filled chunks.</div>
+        <div class="flex gap-3 items-end">
+          <div>
+            <label class="text-xs text-gray-400 block mb-1">Data chunk usage filter (%)</label>
+            <div class="flex items-center gap-2">
+              <input type="range" x-model="balanceUsageFilter" min="0" max="100" step="5"
+                     class="w-36 accent-indigo-500" />
+              <span class="text-sm font-mono text-gray-200 w-8" x-text="balanceUsageFilter + '%'"></span>
+            </div>
+            <div class="text-xs text-gray-500 mt-0.5">Only balance chunks that are &lt; this % full</div>
+          </div>
+        </div>
+        <div class="flex gap-2">
+          <button @click="btrfsBalanceStart(fsModal)" :disabled="fsBusy"
+                  class="px-4 py-2 rounded text-sm bg-indigo-700 hover:bg-indigo-600 text-white transition-colors disabled:opacity-40">
+            Start Balance
+          </button>
+          <button @click="btrfsBalanceCancel(fsModal)"
+                  class="px-4 py-2 rounded text-sm bg-gray-700 hover:bg-gray-600 text-gray-300 transition-colors">
+            Cancel
+          </button>
+        </div>
+        <div class="border-t border-gray-700 pt-3">
+          <div class="text-xs text-gray-400 font-semibold mb-2">Defragmentation</div>
+          <div class="text-xs text-gray-500 mb-2">Online defrag improves sequential read performance on fragmented filesystems.</div>
+          <button @click="btrfsStartDefrag(fsModal)" :disabled="fsBusy"
+                  class="px-4 py-2 rounded text-sm bg-gray-700 hover:bg-gray-600 text-gray-300 transition-colors disabled:opacity-40">
+            Defrag Entire Volume
+          </button>
+        </div>
+        <div class="border-t border-gray-700 pt-3">
+          <div class="text-xs text-gray-400 font-semibold mb-2">Deduplication</div>
+          <div class="text-xs text-gray-500 mb-2">Uses <code class="font-mono bg-gray-700 px-1 rounded">duperemove</code> to find and merge duplicate blocks across the volume.</div>
+          <button @click="btrfsStartDedup(fsModal)" :disabled="fsBusy"
+                  class="px-4 py-2 rounded text-sm bg-gray-700 hover:bg-gray-600 text-gray-300 transition-colors disabled:opacity-40">
+            Run Deduplication
+          </button>
+        </div>
+      </div>
+
+      <!-- QUOTAS TAB -->
+      <div x-show="fsTab === 'quotas'" class="space-y-4">
+        <div class="text-xs text-gray-400">Quota groups (qgroups) limit how much space a subvolume can use. Enable quotas first, then assign limits per qgroup.</div>
+        <div class="flex gap-2">
+          <button @click="btrfsEnableQuotas(fsModal)" :disabled="fsBusy"
+                  class="px-3 py-1.5 rounded text-xs bg-indigo-700 hover:bg-indigo-600 text-white transition-colors disabled:opacity-40">
+            Enable Quotas
+          </button>
+          <button @click="loadBtrfsQuotas(fsModal)"
+                  class="px-3 py-1.5 rounded text-xs bg-gray-700 hover:bg-gray-600 text-gray-300 transition-colors">
+            Refresh
+          </button>
+        </div>
+        <div class="flex gap-2 items-end">
+          <div>
+            <label class="text-xs text-gray-400 block mb-1">Qgroup (e.g. 0/256)</label>
+            <input x-model="quotaQgroup" placeholder="0/256"
+                   class="bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-sm text-gray-200 focus:outline-none focus:border-blue-400 w-28" />
+          </div>
+          <div>
+            <label class="text-xs text-gray-400 block mb-1">Limit (GB)</label>
+            <input type="number" x-model="quotaLimitGb" placeholder="100"
+                   class="bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-sm text-gray-200 focus:outline-none focus:border-blue-400 w-24" />
+          </div>
+          <button @click="btrfsSetQuota(fsModal)" :disabled="fsBusy || !quotaQgroup || !quotaLimitGb"
+                  class="px-3 py-1.5 rounded text-xs bg-indigo-700 hover:bg-indigo-600 text-white transition-colors disabled:opacity-40">
+            Set Limit
+          </button>
+        </div>
+        <div x-show="(btrfsQuotas[fsModal] || []).length === 0"
+             class="text-center text-gray-500 text-sm py-4">No quotas configured.</div>
+        <template x-for="q in btrfsQuotas[fsModal] || []" :key="q.qgroupid">
+          <div class="bg-gray-700/50 rounded-lg px-3 py-2 text-xs">
+            <div class="flex justify-between items-center">
+              <span class="font-mono text-indigo-300" x-text="q.qgroupid"></span>
+              <span x-show="q.limit_bytes" class="text-yellow-400"
+                    x-text="'Limit: ' + humanSize(q.limit_bytes)"></span>
+              <span x-show="!q.limit_bytes" class="text-gray-500">No limit</span>
+            </div>
+            <div class="flex gap-4 mt-1 text-gray-400">
+              <span x-text="'Referenced: ' + humanSize(q.referenced_bytes || 0)"></span>
+              <span x-text="'Exclusive: ' + humanSize(q.exclusive_bytes || 0)"></span>
+            </div>
+          </div>
+        </template>
+      </div>
+
+      <!-- SEND / RECEIVE TAB -->
+      <div x-show="fsTab === 'send-recv'" class="space-y-5">
+        <!-- Send -->
+        <div class="bg-gray-700/30 rounded-lg p-4 space-y-3">
+          <div class="text-xs text-gray-400 font-semibold">Send (Export Snapshot Stream)</div>
+          <div class="text-xs text-gray-500">Creates a binary stream from a read-only snapshot. The file is saved on the server at <code class="font-mono bg-gray-700 px-1 rounded">/var/lib/traid/btrfs-streams/</code></div>
+          <div class="grid grid-cols-2 gap-2">
+            <div>
+              <label class="text-xs text-gray-400 block mb-1">Snapshot path</label>
+              <input x-model="newSnapSrc" placeholder="snapshots/snap-2024"
+                     class="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-xs text-gray-200 focus:outline-none focus:border-blue-400" />
+            </div>
+            <div>
+              <label class="text-xs text-gray-400 block mb-1">Output filename (.btrfs)</label>
+              <input x-model="newSnapDest" placeholder="backup-2024-01-01.btrfs"
+                     class="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-xs text-gray-200 focus:outline-none focus:border-blue-400" />
+            </div>
+          </div>
+          <button @click="async () => {
+              if (!newSnapSrc || !newSnapDest) return
+              fsBusy = true
+              try {
+                const body = { snapshot_path: newSnapSrc, dest_file: newSnapDest }
+                const res = await fetch(`/api/volumes/${encodeURIComponent(fsModal)}/btrfs/send`, {
+                  method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body)
+                })
+                if (!res.ok) throw new Error((await res.json()).detail || 'Send failed')
+                showMonitor = true; await loadJobs()
+              } catch(e) { errorMsg = e.message } finally { fsBusy = false }
+            }"
+                  :disabled="fsBusy || !newSnapSrc || !newSnapDest"
+                  class="px-4 py-1.5 rounded text-xs bg-indigo-700 hover:bg-indigo-600 text-white transition-colors disabled:opacity-40">
+            Start Send
+          </button>
+        </div>
+
+        <!-- Receive -->
+        <div class="bg-gray-700/30 rounded-lg p-4 space-y-3">
+          <div class="text-xs text-gray-400 font-semibold">Receive (Import Snapshot Stream)</div>
+          <div class="text-xs text-gray-500">Restores a snapshot from a .btrfs stream file previously placed in <code class="font-mono bg-gray-700 px-1 rounded">/var/lib/traid/btrfs-streams/</code></div>
+          <div>
+            <label class="text-xs text-gray-400 block mb-1">Source filename (.btrfs)</label>
+            <input x-model="newSnapSrc" placeholder="backup-2024-01-01.btrfs"
+                   class="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-xs text-gray-200 focus:outline-none focus:border-blue-400" />
+          </div>
+          <button @click="async () => {
+              if (!newSnapSrc) return
+              fsBusy = true
+              try {
+                const res = await fetch(`/api/volumes/${encodeURIComponent(fsModal)}/btrfs/receive`, {
+                  method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({source_file: newSnapSrc})
+                })
+                if (!res.ok) throw new Error((await res.json()).detail || 'Receive failed')
+                showMonitor = true; await loadJobs()
+              } catch(e) { errorMsg = e.message } finally { fsBusy = false }
+            }"
+                  :disabled="fsBusy || !newSnapSrc"
+                  class="px-4 py-1.5 rounded text-xs bg-indigo-700 hover:bg-indigo-600 text-white transition-colors disabled:opacity-40">
+            Start Receive
+          </button>
+        </div>
+      </div>
+
+    </div><!-- end tab content -->
+  </div>
+</div>
+
+<!-- =========================================================
      TASK MONITOR PANEL (slide-in from right)
 ========================================================= -->
 <div x-show="showMonitor"
@@ -815,6 +1328,28 @@ function traidApp() {
     // Volumes
     volumes: {},
 
+    // Filesystem management
+    fsData: {},          // vg_name → fs info from /api/volumes/{vg}/filesystem
+    fsModal: null,       // vg_name of open FS modal, or null
+    fsTab: 'info',       // active tab inside FS modal
+    fsBusy: false,       // FS modal operation in progress
+    btrfsSubvols: {},    // vg_name → subvolume list
+    btrfsQuotas: {},     // vg_name → quota list
+    newSubvolName: '',
+    newSnapSrc: '',
+    newSnapDest: '',
+    newSnapReadonly: true,
+    balanceUsageFilter: 50,
+    scrubStatus: {},     // vg_name → scrub status text
+    balanceStatus: {},   // vg_name → balance status text
+    formatModal: null,   // vg_name of open format modal
+    formatFstype: 'ext4',
+    formatLabel: '',
+    formatCompression: 'zstd',
+    formatBusy: false,
+    quotaQgroup: '',
+    quotaLimitGb: '',
+
     // Wizard state
     wizardStep: 0,
     selectedDisks: [],
@@ -888,8 +1423,270 @@ function traidApp() {
     async loadVolumes() {
       try {
         const res = await fetch('/api/volumes')
-        if (res.ok) this.volumes = await res.json()
+        if (res.ok) {
+          this.volumes = await res.json()
+          for (const vg of this.volumes.vgs || [])
+            this.loadFsInfo(vg.vg_name)
+        }
       } catch (_) {}
+    },
+
+    async loadFsInfo(vgName) {
+      try {
+        const res = await fetch(`/api/volumes/${encodeURIComponent(vgName)}/filesystem`)
+        if (res.ok) this.fsData = { ...this.fsData, [vgName]: await res.json() }
+      } catch (_) {}
+    },
+
+    async loadBtrfsSubvols(vgName) {
+      try {
+        const res = await fetch(`/api/volumes/${encodeURIComponent(vgName)}/btrfs/subvolumes`)
+        if (res.ok) {
+          const data = await res.json()
+          this.btrfsSubvols = { ...this.btrfsSubvols, [vgName]: data.subvolumes || [] }
+        }
+      } catch (_) {}
+    },
+
+    async loadBtrfsQuotas(vgName) {
+      try {
+        const res = await fetch(`/api/volumes/${encodeURIComponent(vgName)}/btrfs/quotas`)
+        if (res.ok) {
+          const data = await res.json()
+          this.btrfsQuotas = { ...this.btrfsQuotas, [vgName]: data.quotas || [] }
+        }
+      } catch (_) {}
+    },
+
+    openFsModal(vgName) {
+      this.fsModal = vgName
+      this.fsTab = 'info'
+      this.fsBusy = false
+      this.loadFsInfo(vgName)
+    },
+
+    closeFsModal() {
+      this.fsModal = null
+    },
+
+    openFormatModal(vgName) {
+      this.formatModal = vgName
+      this.formatFstype = 'ext4'
+      this.formatLabel = ''
+      this.formatCompression = 'zstd'
+    },
+
+    async submitFormat() {
+      this.formatBusy = true
+      try {
+        const body = { fstype: this.formatFstype, label: this.formatLabel }
+        if (this.formatFstype === 'btrfs') body.compression = this.formatCompression
+        const res = await fetch(`/api/volumes/${encodeURIComponent(this.formatModal)}/filesystem`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+        })
+        if (!res.ok) throw new Error((await res.json()).detail?.message || `HTTP ${res.status}`)
+        this.formatModal = null
+        this.showMonitor = true
+        await this.loadJobs()
+        await this.loadFsInfo(this.formatModal || '')
+      } catch (e) {
+        this.errorMsg = 'Format failed: ' + e.message
+      } finally {
+        this.formatBusy = false
+      }
+    },
+
+    async fsMountToggle(vgName) {
+      const info = this.fsData[vgName] || {}
+      const action = info.mounted ? 'unmount' : 'mount'
+      this.fsBusy = true
+      try {
+        const res = await fetch(`/api/volumes/${encodeURIComponent(vgName)}/filesystem/${action}`, { method: 'POST' })
+        if (!res.ok) throw new Error((await res.json()).detail || `HTTP ${res.status}`)
+        await this.loadFsInfo(vgName)
+      } catch (e) {
+        this.errorMsg = `${action} failed: ` + e.message
+      } finally {
+        this.fsBusy = false
+      }
+    },
+
+    async btrfsCreateSubvol(vgName) {
+      if (!this.newSubvolName) return
+      this.fsBusy = true
+      try {
+        const res = await fetch(`/api/volumes/${encodeURIComponent(vgName)}/btrfs/subvolumes`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: this.newSubvolName }),
+        })
+        if (!res.ok) throw new Error((await res.json()).detail || `HTTP ${res.status}`)
+        this.newSubvolName = ''
+        await this.loadBtrfsSubvols(vgName)
+      } catch (e) {
+        this.errorMsg = 'Create subvolume failed: ' + e.message
+      } finally {
+        this.fsBusy = false
+      }
+    },
+
+    async btrfsDeleteSubvol(vgName, path, recursive) {
+      if (!confirm(`Delete subvolume "${path}"?${recursive ? ' (recursive)' : ''}`)) return
+      this.fsBusy = true
+      try {
+        const res = await fetch(`/api/volumes/${encodeURIComponent(vgName)}/btrfs/subvolumes`, {
+          method: 'DELETE', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ path, recursive }),
+        })
+        if (!res.ok) throw new Error((await res.json()).detail || `HTTP ${res.status}`)
+        await this.loadBtrfsSubvols(vgName)
+      } catch (e) {
+        this.errorMsg = 'Delete failed: ' + e.message
+      } finally {
+        this.fsBusy = false
+      }
+    },
+
+    async btrfsCreateSnapshot(vgName) {
+      if (!this.newSnapSrc || !this.newSnapDest) return
+      this.fsBusy = true
+      try {
+        const res = await fetch(`/api/volumes/${encodeURIComponent(vgName)}/btrfs/snapshots`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ source_path: this.newSnapSrc, dest_path: this.newSnapDest, readonly: this.newSnapReadonly }),
+        })
+        if (!res.ok) throw new Error((await res.json()).detail || `HTTP ${res.status}`)
+        this.newSnapSrc = ''; this.newSnapDest = ''
+        await this.loadBtrfsSubvols(vgName)
+      } catch (e) {
+        this.errorMsg = 'Snapshot failed: ' + e.message
+      } finally {
+        this.fsBusy = false
+      }
+    },
+
+    async btrfsSetDefault(vgName, subvolId) {
+      this.fsBusy = true
+      try {
+        const res = await fetch(`/api/volumes/${encodeURIComponent(vgName)}/btrfs/default-subvolume?subvol_id=${subvolId}`, { method: 'POST' })
+        if (!res.ok) throw new Error((await res.json()).detail || `HTTP ${res.status}`)
+        await this.loadBtrfsSubvols(vgName)
+      } catch (e) {
+        this.errorMsg = 'Set default failed: ' + e.message
+      } finally {
+        this.fsBusy = false
+      }
+    },
+
+    async btrfsScrubStart(vgName) {
+      this.fsBusy = true
+      try {
+        const res = await fetch(`/api/volumes/${encodeURIComponent(vgName)}/btrfs/scrub`, { method: 'POST' })
+        if (!res.ok) throw new Error((await res.json()).detail || `HTTP ${res.status}`)
+        this.showMonitor = true; await this.loadJobs()
+      } catch (e) {
+        this.errorMsg = 'Scrub failed: ' + e.message
+      } finally {
+        this.fsBusy = false
+      }
+    },
+
+    async btrfsScrubCancel(vgName) {
+      try {
+        await fetch(`/api/volumes/${encodeURIComponent(vgName)}/btrfs/scrub`, { method: 'DELETE' })
+      } catch (_) {}
+    },
+
+    async btrfsScrubStatus(vgName) {
+      try {
+        const res = await fetch(`/api/volumes/${encodeURIComponent(vgName)}/btrfs/scrub`)
+        if (res.ok) {
+          const d = await res.json()
+          this.scrubStatus = { ...this.scrubStatus, [vgName]: d.status || '' }
+        }
+      } catch (_) {}
+    },
+
+    async btrfsBalanceStart(vgName) {
+      this.fsBusy = true
+      try {
+        const body = {}
+        if (this.balanceUsageFilter !== null && this.balanceUsageFilter !== '')
+          body.usage_filter = parseInt(this.balanceUsageFilter)
+        const res = await fetch(`/api/volumes/${encodeURIComponent(vgName)}/btrfs/balance`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+        })
+        if (!res.ok) throw new Error((await res.json()).detail || `HTTP ${res.status}`)
+        this.showMonitor = true; await this.loadJobs()
+      } catch (e) {
+        this.errorMsg = 'Balance failed: ' + e.message
+      } finally {
+        this.fsBusy = false
+      }
+    },
+
+    async btrfsBalanceCancel(vgName) {
+      try {
+        await fetch(`/api/volumes/${encodeURIComponent(vgName)}/btrfs/balance`, { method: 'DELETE' })
+      } catch (_) {}
+    },
+
+    async btrfsStartDefrag(vgName) {
+      this.fsBusy = true
+      try {
+        const res = await fetch(`/api/volumes/${encodeURIComponent(vgName)}/btrfs/defrag`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ recursive: true }),
+        })
+        if (!res.ok) throw new Error((await res.json()).detail || `HTTP ${res.status}`)
+        this.showMonitor = true; await this.loadJobs()
+      } catch (e) {
+        this.errorMsg = 'Defrag failed: ' + e.message
+      } finally {
+        this.fsBusy = false
+      }
+    },
+
+    async btrfsEnableQuotas(vgName) {
+      this.fsBusy = true
+      try {
+        const res = await fetch(`/api/volumes/${encodeURIComponent(vgName)}/btrfs/quotas/enable`, { method: 'POST' })
+        if (!res.ok) throw new Error((await res.json()).detail || `HTTP ${res.status}`)
+        await this.loadBtrfsQuotas(vgName)
+      } catch (e) {
+        this.errorMsg = 'Enable quotas failed: ' + e.message
+      } finally {
+        this.fsBusy = false
+      }
+    },
+
+    async btrfsSetQuota(vgName) {
+      if (!this.quotaQgroup || !this.quotaLimitGb) return
+      this.fsBusy = true
+      try {
+        const res = await fetch(`/api/volumes/${encodeURIComponent(vgName)}/btrfs/quotas`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ qgroup: this.quotaQgroup, limit_bytes: Math.round(parseFloat(this.quotaLimitGb) * 1024**3) }),
+        })
+        if (!res.ok) throw new Error((await res.json()).detail || `HTTP ${res.status}`)
+        await this.loadBtrfsQuotas(vgName)
+      } catch (e) {
+        this.errorMsg = 'Set quota failed: ' + e.message
+      } finally {
+        this.fsBusy = false
+      }
+    },
+
+    async btrfsStartDedup(vgName) {
+      this.fsBusy = true
+      try {
+        const res = await fetch(`/api/volumes/${encodeURIComponent(vgName)}/btrfs/dedup`, { method: 'POST' })
+        if (!res.ok) throw new Error((await res.json()).detail || `HTTP ${res.status}`)
+        this.showMonitor = true; await this.loadJobs()
+      } catch (e) {
+        this.errorMsg = 'Dedup failed: ' + e.message
+      } finally {
+        this.fsBusy = false
+      }
     },
 
     async loadJobs() {
