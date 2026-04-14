@@ -1,0 +1,100 @@
+"""
+Docker container/image management routes — /api/containers, /api/images, /api/docker
+"""
+
+import re
+from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel, field_validator
+from typing import Literal
+
+from api import uds_client
+from api.models import JobAccepted
+
+router = APIRouter(tags=["docker"])
+
+_DOCKER_ID_RE    = re.compile(r"^[a-f0-9A-F]{1,64}$")
+_DOCKER_IMAGE_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_./@:-]{1,254}$")
+
+
+class ContainerActionRequest(BaseModel):
+    action: Literal["start", "stop", "rm"]
+
+
+class PullImageRequest(BaseModel):
+    image: str
+
+    @field_validator("image")
+    @classmethod
+    def _img(cls, v):
+        if not _DOCKER_IMAGE_RE.match(v):
+            raise ValueError("invalid image name/tag")
+        return v
+
+
+async def _send(action: str, params: dict = {}) -> dict:
+    try:
+        return await uds_client.send_request(action, params)
+    except uds_client.WorkerUnavailableError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    except uds_client.WorkerError as exc:
+        status = 400 if exc.code == "VALIDATION_ERROR" else 500
+        raise HTTPException(status_code=status, detail={"code": exc.code, "message": exc.message})
+
+
+# ---------------------------------------------------------------------------
+# Containers
+# ---------------------------------------------------------------------------
+
+@router.get("/api/containers")
+async def list_containers(all: bool = True):
+    return await _send("docker_list_containers", {"all": all})
+
+
+@router.post("/api/containers/{container_id}/action")
+async def container_action(container_id: str, request: ContainerActionRequest):
+    if not _DOCKER_ID_RE.match(container_id):
+        raise HTTPException(status_code=400, detail="invalid container ID")
+    return await _send("docker_container_action",
+                        {"container_id": container_id, "action": request.action})
+
+
+@router.get("/api/containers/{container_id}/logs")
+async def container_logs(container_id: str, lines: int = 200):
+    if not _DOCKER_ID_RE.match(container_id):
+        raise HTTPException(status_code=400, detail="invalid container ID")
+    if not (1 <= lines <= 10000):
+        raise HTTPException(status_code=400, detail="lines must be 1–10000")
+    return await _send("docker_container_logs",
+                        {"container_id": container_id, "lines": lines})
+
+
+# ---------------------------------------------------------------------------
+# Images
+# ---------------------------------------------------------------------------
+
+@router.get("/api/images")
+async def list_images():
+    return await _send("docker_list_images")
+
+
+@router.post("/api/images/pull", status_code=202, response_model=JobAccepted)
+async def pull_image(request: PullImageRequest):
+    data = await _send("docker_pull_image", {"image": request.image})
+    return JobAccepted(**data)
+
+
+@router.delete("/api/images/{image_id}")
+async def remove_image(image_id: str, force: bool = False):
+    if not _DOCKER_ID_RE.match(image_id):
+        raise HTTPException(status_code=400, detail="invalid image ID")
+    return await _send("docker_remove_image", {"image_id": image_id, "force": force})
+
+
+# ---------------------------------------------------------------------------
+# System
+# ---------------------------------------------------------------------------
+
+@router.post("/api/docker/prune", status_code=202, response_model=JobAccepted)
+async def system_prune():
+    data = await _send("docker_system_prune")
+    return JobAccepted(**data)

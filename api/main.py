@@ -19,6 +19,10 @@ from fastapi import FastAPI, HTTPException, Query, Response, WebSocket, WebSocke
 from pythonjsonlogger import jsonlogger
 
 from api import uds_client
+from api.vm_routes      import router as vm_router
+from api.docker_routes  import router as docker_router
+from api.backup_routes  import router as backup_router
+from api.sharing_routes import router as sharing_router
 from api.models import (
     ArrayCreationRequest,
     BackupRequest,
@@ -84,6 +88,10 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="TRAID Web API", lifespan=lifespan)
+app.include_router(vm_router)
+app.include_router(docker_router)
+app.include_router(backup_router)
+app.include_router(sharing_router)
 
 # ---------------------------------------------------------------------------
 # Error helpers
@@ -501,6 +509,24 @@ async def scrub_status(vg_name: str):
 async def cancel_scrub(vg_name: str):
     _check_vg(vg_name)
     return await _fs_send("btrfs_scrub_cancel", {"vg_name": vg_name})
+
+
+@app.post("/api/volumes/{vg_name}/btrfs/scrub/pause")
+async def pause_scrub(vg_name: str):
+    _check_vg(vg_name)
+    return await _fs_send("btrfs_scrub_pause", {"vg_name": vg_name})
+
+
+@app.post("/api/volumes/{vg_name}/btrfs/scrub/resume")
+async def resume_scrub(vg_name: str):
+    _check_vg(vg_name)
+    return await _fs_send("btrfs_scrub_resume", {"vg_name": vg_name})
+
+
+@app.get("/api/volumes/{vg_name}/btrfs/scrub/last")
+async def scrub_last_result(vg_name: str):
+    _check_vg(vg_name)
+    return await _fs_send("btrfs_scrub_last_result", {"vg_name": vg_name})
 
 
 # ---------------------------------------------------------------------------

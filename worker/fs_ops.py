@@ -14,6 +14,15 @@ import re
 import time
 from pathlib import Path
 
+try:
+    import btrfsutil
+    _BTRFSUTIL_AVAILABLE = True
+except ImportError:
+    _BTRFSUTIL_AVAILABLE = False
+    logging.getLogger(__name__).warning(
+        "btrfsutil not available; falling back to CLI for subvolume operations"
+    )
+
 logger = logging.getLogger(__name__)
 
 MOUNT_BASE = Path("/mnt/traid")
@@ -379,71 +388,101 @@ def _parse_btrfs_dev_stats(output: str) -> list:
 # Btrfs: Subvolumes & Snapshots
 # ---------------------------------------------------------------------------
 
+def _list_subvols_sync(mount_point: str) -> list:
+    """Run synchronously inside an executor (btrfsutil is a blocking C extension)."""
+    _ZERO_UUID = bytes(16)
+    default_id = btrfsutil.get_default_subvolume(mount_point)
+    subvols = []
+    with btrfsutil.SubvolumeIterator(mount_point, info=True) as it:
+        for path, info in it:
+            subvols.append({
+                "id": info.id,
+                "parent_id": info.parent_id,
+                "path": path,
+                "is_snapshot": info.parent_uuid != _ZERO_UUID,
+                # default_id == 5 means FS_TREE (no custom default set)
+                "is_default": info.id == default_id and default_id != 5,
+            })
+    return subvols
+
+
 async def btrfs_list_subvolumes(vg_name: str) -> list:
     mp = _require_btrfs(vg_name)
-    rc, out, err = await _run("btrfs", "subvolume", "list", "-p", "-s", str(mp))
+    if _BTRFSUTIL_AVAILABLE:
+        return await asyncio.to_thread(_list_subvols_sync, str(mp))
+    # CLI fallback
+    rc, out, err = await _run("btrfs", "subvolume", "list", "-p", str(mp))
     if rc != 0:
         raise RuntimeError(f"btrfs subvolume list failed: {err.strip()}")
-    subvols = []
-    for line in out.strip().splitlines():
-        # Format: ID <id> gen <gen> parent <pid> top level <tlid> path <path>
-        m = re.match(
-            r"ID\s+(\d+)\s+gen\s+\d+\s+parent\s+(\d+)\s+top level\s+(\d+)\s+path\s+(.+)",
-            line.strip()
-        )
-        if m:
-            subvols.append({
-                "id": int(m.group(1)),
-                "parent_id": int(m.group(2)),
-                "top_level": int(m.group(3)),
-                "path": m.group(4),
-                "is_snapshot": False,
-            })
-    # Mark snapshots (subvols that appear in snapshot list)
+    # Get default subvolume ID from CLI
+    rc_def, out_def, _ = await _run("btrfs", "subvolume", "get-default", str(mp))
+    default_id = 5
+    if rc_def == 0:
+        m_def = re.search(r"ID\s+(\d+)", out_def)
+        if m_def:
+            default_id = int(m_def.group(1))
+    # Get snapshot IDs
     rc2, out2, _ = await _run("btrfs", "subvolume", "list", "-s", str(mp))
-    snap_ids = set()
+    snap_ids: set[int] = set()
     if rc2 == 0:
         for line in out2.strip().splitlines():
             m = re.match(r"ID\s+(\d+)", line.strip())
             if m:
                 snap_ids.add(int(m.group(1)))
-    for sv in subvols:
-        sv["is_snapshot"] = sv["id"] in snap_ids
+    subvols = []
+    for line in out.strip().splitlines():
+        m = re.match(
+            r"ID\s+(\d+)\s+gen\s+\d+\s+parent\s+(\d+)\s+top level\s+(\d+)\s+path\s+(.+)",
+            line.strip()
+        )
+        if m:
+            sv_id = int(m.group(1))
+            subvols.append({
+                "id": sv_id,
+                "parent_id": int(m.group(2)),
+                "path": m.group(4),
+                "is_snapshot": sv_id in snap_ids,
+                "is_default": sv_id == default_id and default_id != 5,
+            })
     return subvols
 
 
 async def btrfs_create_subvolume(vg_name: str, name: str) -> dict:
     mp = _require_btrfs(vg_name)
-    path = mp / name
-    rc, _, err = await _run("btrfs", "subvolume", "create", str(path))
-    if rc != 0:
-        raise RuntimeError(f"btrfs subvolume create failed: {err.strip()}")
-    return {"created": True, "path": str(path)}
+    path = str(mp / name)
+    if _BTRFSUTIL_AVAILABLE:
+        await asyncio.to_thread(btrfsutil.create_subvolume, path)
+    else:
+        rc, _, err = await _run("btrfs", "subvolume", "create", path)
+        if rc != 0:
+            raise RuntimeError(f"btrfs subvolume create failed: {err.strip()}")
+    return {"created": True, "path": path}
 
 
 async def btrfs_delete_subvolume(vg_name: str, path: str, recursive: bool = False) -> dict:
     mp = _require_btrfs(vg_name)
     full_path = str(mp / path)
-    cmd = ["btrfs", "subvolume", "delete"]
-    if recursive:
-        # Delete all nested subvolumes first
-        rc, out, _ = await _run(
-            "btrfs", "subvolume", "list", "-o", str(mp)
+    if _BTRFSUTIL_AVAILABLE:
+        await asyncio.to_thread(
+            lambda: btrfsutil.delete_subvolume(full_path, recursive=recursive)
         )
-        if rc == 0:
-            nested = []
-            for line in out.strip().splitlines():
-                m = re.search(r"path\s+(.+)", line)
-                if m:
-                    nested_path = m.group(1)
-                    if nested_path.startswith(path + "/") or nested_path == path:
-                        nested.append(str(mp / nested_path))
-            # Delete deepest first
-            for p in sorted(nested, key=len, reverse=True):
-                await _run("btrfs", "subvolume", "delete", p)
-    rc, _, err = await _run(*cmd, full_path)
-    if rc != 0:
-        raise RuntimeError(f"btrfs subvolume delete failed: {err.strip()}")
+    else:
+        if recursive:
+            # Delete all nested subvolumes first (deepest first)
+            rc, out, _ = await _run("btrfs", "subvolume", "list", "-o", str(mp))
+            if rc == 0:
+                nested = []
+                for line in out.strip().splitlines():
+                    m = re.search(r"path\s+(.+)", line)
+                    if m:
+                        nested_path = m.group(1)
+                        if nested_path.startswith(path + "/") or nested_path == path:
+                            nested.append(str(mp / nested_path))
+                for p in sorted(nested, key=len, reverse=True):
+                    await _run("btrfs", "subvolume", "delete", p)
+        rc, _, err = await _run("btrfs", "subvolume", "delete", full_path)
+        if rc != 0:
+            raise RuntimeError(f"btrfs subvolume delete failed: {err.strip()}")
     return {"deleted": True, "path": path}
 
 
@@ -453,29 +492,83 @@ async def btrfs_create_snapshot(
     mp = _require_btrfs(vg_name)
     src = str(mp / source_path)
     dst = str(mp / dest_path)
-    cmd = ["btrfs", "subvolume", "snapshot"]
-    if readonly:
-        cmd.append("-r")
-    cmd += [src, dst]
-    rc, _, err = await _run(*cmd)
-    if rc != 0:
-        raise RuntimeError(f"btrfs snapshot failed: {err.strip()}")
+    if _BTRFSUTIL_AVAILABLE:
+        await asyncio.to_thread(
+            lambda: btrfsutil.create_snapshot(src, dst, read_only=readonly)
+        )
+    else:
+        cmd = ["btrfs", "subvolume", "snapshot"]
+        if readonly:
+            cmd.append("-r")
+        cmd += [src, dst]
+        rc, _, err = await _run(*cmd)
+        if rc != 0:
+            raise RuntimeError(f"btrfs snapshot failed: {err.strip()}")
     return {"created": True, "snapshot": dest_path, "readonly": readonly}
 
 
 async def btrfs_set_default_subvolume(vg_name: str, subvol_id: int) -> dict:
     mp = _require_btrfs(vg_name)
-    rc, _, err = await _run(
-        "btrfs", "subvolume", "set-default", str(subvol_id), str(mp)
-    )
-    if rc != 0:
-        raise RuntimeError(f"btrfs set-default failed: {err.strip()}")
+    if _BTRFSUTIL_AVAILABLE:
+        await asyncio.to_thread(
+            lambda: btrfsutil.set_default_subvolume(str(mp), subvol_id)
+        )
+    else:
+        rc, _, err = await _run(
+            "btrfs", "subvolume", "set-default", str(subvol_id), str(mp)
+        )
+        if rc != 0:
+            raise RuntimeError(f"btrfs set-default failed: {err.strip()}")
     return {"default_id": subvol_id}
 
 
 # ---------------------------------------------------------------------------
 # Btrfs: Scrub
 # ---------------------------------------------------------------------------
+
+def _parse_scrub_status(output: str) -> dict:
+    """Parse the output of 'btrfs scrub status' into a structured dict."""
+    result: dict = {}
+    for line in output.splitlines():
+        line = line.strip()
+        if not line or ":" not in line:
+            continue
+        key, _, val = line.partition(":")
+        key = key.strip().lower().replace(" ", "_").replace("/", "_")
+        val = val.strip()
+        if key == "status":
+            result["status"] = val
+        elif key == "duration":
+            result["duration"] = val
+            parts = val.split(":")
+            try:
+                if len(parts) == 3:
+                    result["duration_seconds"] = (
+                        int(parts[0]) * 3600 + int(parts[1]) * 60 + int(parts[2])
+                    )
+                elif len(parts) == 2:
+                    result["duration_seconds"] = int(parts[0]) * 60 + int(parts[1])
+            except (ValueError, IndexError):
+                pass
+        elif key == "time_left":
+            result["time_left"] = val
+        elif key == "error_summary":
+            result["error_summary"] = val
+        elif key in (
+            "data_extents_scrubbed", "tree_extents_scrubbed",
+            "read_errors", "csum_errors", "verify_errors",
+            "corrected_errors", "uncorrectable_errors",
+        ):
+            try:
+                result[key] = int(val)
+            except ValueError:
+                pass
+    if "status" not in result:
+        # Could not parse — include raw
+        result["status"] = "unknown"
+        result["raw"] = output.strip()
+    return result
+
 
 async def btrfs_scrub_start(vg_name: str, update_fn) -> None:
     mp = _require_btrfs(vg_name)
@@ -484,18 +577,55 @@ async def btrfs_scrub_start(vg_name: str, update_fn) -> None:
     if rc not in (0, 1):   # exit 1 = completed with errors, still want results
         raise RuntimeError(f"btrfs scrub failed: {err.strip()}")
     update_fn("Scrub complete", 100)
+    # Persist the final scrub result
+    try:
+        _, out2, _ = await _run("btrfs", "scrub", "status", str(mp))
+        parsed = _parse_scrub_status(out2)
+        state = _load_state()
+        state.setdefault(vg_name, {})["scrub_last_result"] = {
+            "timestamp": time.time(), **parsed,
+        }
+        _save_state(state)
+    except Exception as exc:
+        logger.warning("failed to save scrub result for %s: %s", vg_name, exc)
 
 
 async def btrfs_scrub_status(vg_name: str) -> dict:
     mp = _require_btrfs(vg_name)
     rc, out, _ = await _run("btrfs", "scrub", "status", str(mp))
-    return {"status": out.strip(), "rc": rc}
+    parsed = _parse_scrub_status(out)
+    return {"status": out.strip(), "parsed": parsed, "rc": rc}
+
+
+async def btrfs_scrub_pause(vg_name: str) -> dict:
+    mp = _require_btrfs(vg_name)
+    rc, _, err = await _run("btrfs", "scrub", "pause", str(mp))
+    if rc != 0:
+        raise RuntimeError(f"btrfs scrub pause failed: {err.strip()}")
+    return {"paused": True}
+
+
+async def btrfs_scrub_resume(vg_name: str) -> dict:
+    mp = _require_btrfs(vg_name)
+    rc, _, err = await _run("btrfs", "scrub", "resume", str(mp))
+    if rc != 0:
+        raise RuntimeError(f"btrfs scrub resume failed: {err.strip()}")
+    return {"resumed": True}
 
 
 async def btrfs_scrub_cancel(vg_name: str) -> dict:
     mp = _require_btrfs(vg_name)
     rc, _, err = await _run("btrfs", "scrub", "cancel", str(mp))
     return {"cancelled": rc == 0, "error": err.strip() if rc != 0 else None}
+
+
+async def btrfs_scrub_last_result(vg_name: str) -> dict:
+    """Return the last persisted scrub result from state file."""
+    state = _load_state()
+    result = state.get(vg_name, {}).get("scrub_last_result")
+    if result is None:
+        return {"available": False}
+    return {"available": True, **result}
 
 
 # ---------------------------------------------------------------------------

@@ -144,6 +144,67 @@ def mock_worker():
             return _accepted()
         if action == "btrfs_receive":
             return _accepted()
+        if action == "btrfs_scrub_pause":
+            return {"paused": True}
+        if action == "btrfs_scrub_resume":
+            return {"resumed": True}
+        if action == "btrfs_scrub_last_result":
+            return {"last_result": None}
+        # ---- VMs ----
+        if action == "vm_list":
+            return [{"name": "debian12", "state": "running", "vcpus": 2}]
+        if action == "vm_list_isos":
+            return ["debian12.iso", "ubuntu2204.iso"]
+        if action == "vm_info":
+            return {"name": params.get("name"), "state": "running", "vcpus": 2}
+        if action == "vm_action":
+            return {"name": params.get("name"), "action": params.get("action"), "ok": True}
+        if action == "vm_create":
+            return _accepted()
+        if action == "vm_delete":
+            return {"name": params.get("name"), "deleted": True}
+        # ---- Docker ----
+        if action == "docker_list_containers":
+            return [{"id": "abc123", "name": "web", "image": "nginx", "state": "running"}]
+        if action == "docker_container_action":
+            return {"container_id": params.get("container_id"), "action": params.get("action"), "ok": True}
+        if action == "docker_container_logs":
+            return {"container_id": params.get("container_id"), "logs": "line1\nline2\n"}
+        if action == "docker_list_images":
+            return [{"id": "sha256abc", "repository": "ubuntu", "tag": "22.04", "size": "77MB"}]
+        if action == "docker_pull_image":
+            return _accepted()
+        if action == "docker_remove_image":
+            return {"image_id": params.get("image_id"), "removed": True}
+        if action == "docker_system_prune":
+            return _accepted()
+        # ---- Backup ----
+        if action == "backup_list_jobs":
+            return [{"backup_id": _FAKE_JOB_ID, "name": "daily", "source_vg": "vg",
+                     "dest_protocol": "rsync_local", "last_status": "never"}]
+        if action == "backup_create_job":
+            return {"backup_id": _FAKE_JOB_ID, "name": params.get("name"),
+                    "source_vg": params.get("source_vg"), "history": []}
+        if action == "backup_delete_job":
+            return {"deleted": True, "backup_id": params.get("backup_id")}
+        if action == "backup_run_now":
+            return _accepted()
+        if action == "backup_job_history":
+            return [{"run_at": 1700000000, "status": "ok", "duration_s": 5.0}]
+        # ---- Sharing ----
+        if action == "nfs_list_exports":
+            return [{"path": "/srv/traid/data", "clients": "*(rw)"}]
+        if action == "nfs_add_export":
+            return {"added": True, "path": params.get("path")}
+        if action == "nfs_remove_export":
+            return {"removed": True, "path": params.get("path")}
+        if action == "samba_list_shares":
+            return [{"name": "myshare", "path": "/srv/traid/data",
+                     "comment": "", "public": False, "writable": True}]
+        if action == "samba_add_share":
+            return {"added": True, "name": params.get("name")}
+        if action == "samba_remove_share":
+            return {"removed": True, "name": params.get("name")}
         return {}
 
     with patch("api.uds_client.send_request", side_effect=fake_send):
@@ -1352,3 +1413,547 @@ async def test_btrfs_receive_bad_file_rejected(client):
     resp = await client.post("/api/volumes/traid_vg/btrfs/receive",
                              json={"source_file": "backup.zip"})
     assert resp.status_code == 422
+
+
+# ===========================================================================
+# VMs — /api/vms
+# ===========================================================================
+
+@pytest.mark.asyncio
+async def test_get_vms_returns_list(client):
+    resp = await client.get("/api/vms")
+    assert resp.status_code == 200
+    assert isinstance(resp.json(), list)
+
+
+@pytest.mark.asyncio
+async def test_get_vms_has_name_field(client):
+    resp = await client.get("/api/vms")
+    assert resp.json()[0]["name"] == "debian12"
+
+
+@pytest.mark.asyncio
+async def test_get_isos_returns_list(client):
+    resp = await client.get("/api/vms/isos")
+    assert resp.status_code == 200
+    assert "debian12.iso" in resp.json()
+
+
+@pytest.mark.asyncio
+async def test_get_vm_info(client):
+    resp = await client.get("/api/vms/debian12")
+    assert resp.status_code == 200
+    assert resp.json()["name"] == "debian12"
+
+
+@pytest.mark.asyncio
+async def test_get_vm_invalid_name(client):
+    resp = await client.get("/api/vms/bad name!")
+    assert resp.status_code in (400, 422)
+
+
+@pytest.mark.asyncio
+async def test_vm_action_start(client):
+    resp = await client.post("/api/vms/debian12/action", json={"action": "start"})
+    assert resp.status_code == 200
+    assert resp.json()["ok"] is True
+
+
+@pytest.mark.asyncio
+async def test_vm_action_shutdown(client):
+    resp = await client.post("/api/vms/debian12/action", json={"action": "shutdown"})
+    assert resp.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_vm_action_invalid(client):
+    resp = await client.post("/api/vms/debian12/action", json={"action": "explode"})
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_create_vm_returns_202(client):
+    resp = await client.post("/api/vms", json={
+        "name": "newvm", "iso": "debian12.iso",
+        "ram_mb": 2048, "vcpus": 2, "disk_gb": 20,
+    })
+    assert resp.status_code == 202
+    assert resp.json()["accepted"] is True
+
+
+@pytest.mark.asyncio
+async def test_create_vm_invalid_name(client):
+    resp = await client.post("/api/vms", json={
+        "name": "bad name!", "iso": "debian12.iso",
+        "ram_mb": 2048, "vcpus": 2, "disk_gb": 20,
+    })
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_create_vm_invalid_iso(client):
+    resp = await client.post("/api/vms", json={
+        "name": "myvm", "iso": "notaniso.tar.gz",
+        "ram_mb": 2048, "vcpus": 2, "disk_gb": 20,
+    })
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_create_vm_ram_too_low(client):
+    resp = await client.post("/api/vms", json={
+        "name": "myvm", "iso": "debian12.iso",
+        "ram_mb": 32, "vcpus": 2, "disk_gb": 20,
+    })
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_delete_vm(client):
+    resp = await client.delete("/api/vms/debian12")
+    assert resp.status_code == 200
+    assert resp.json()["deleted"] is True
+
+
+@pytest.mark.asyncio
+async def test_delete_vm_invalid_name(client):
+    resp = await client.delete("/api/vms/bad name!")
+    assert resp.status_code in (400, 422)
+
+
+@pytest.mark.asyncio
+async def test_vm_routes_worker_unavailable():
+    async def unavailable(*a, **kw):
+        raise WorkerUnavailableError("no socket")
+    with patch("api.uds_client.send_request", side_effect=unavailable):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+            resp = await c.get("/api/vms")
+    assert resp.status_code == 503
+
+
+# ===========================================================================
+# Containers — /api/containers, /api/images, /api/docker
+# ===========================================================================
+
+@pytest.mark.asyncio
+async def test_list_containers(client):
+    resp = await client.get("/api/containers")
+    assert resp.status_code == 200
+    assert isinstance(resp.json(), list)
+
+
+@pytest.mark.asyncio
+async def test_list_containers_has_fields(client):
+    container = resp = await client.get("/api/containers")
+    c = resp.json()[0]
+    for field in ("id", "name", "image", "state"):
+        assert field in c
+
+
+@pytest.mark.asyncio
+async def test_container_action_start(client):
+    resp = await client.post(
+        "/api/containers/abc1234567890abc/action",
+        json={"action": "start"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["ok"] is True
+
+
+@pytest.mark.asyncio
+async def test_container_action_stop(client):
+    resp = await client.post(
+        "/api/containers/abc1234567890abc/action",
+        json={"action": "stop"},
+    )
+    assert resp.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_container_action_rm(client):
+    resp = await client.post(
+        "/api/containers/abc1234567890abc/action",
+        json={"action": "rm"},
+    )
+    assert resp.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_container_action_invalid(client):
+    resp = await client.post(
+        "/api/containers/abc1234567890abc/action",
+        json={"action": "delete"},
+    )
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_container_invalid_id(client):
+    resp = await client.post(
+        "/api/containers/bad id!/action",
+        json={"action": "start"},
+    )
+    assert resp.status_code in (400, 422)
+
+
+@pytest.mark.asyncio
+async def test_container_logs(client):
+    resp = await client.get("/api/containers/abc1234567890abc/logs")
+    assert resp.status_code == 200
+    assert "logs" in resp.json()
+
+
+@pytest.mark.asyncio
+async def test_container_logs_lines_param(client):
+    resp = await client.get("/api/containers/abc1234567890abc/logs?lines=50")
+    assert resp.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_container_logs_lines_too_high(client):
+    resp = await client.get("/api/containers/abc1234567890abc/logs?lines=99999")
+    assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_list_images(client):
+    resp = await client.get("/api/images")
+    assert resp.status_code == 200
+    assert isinstance(resp.json(), list)
+
+
+@pytest.mark.asyncio
+async def test_list_images_has_fields(client):
+    resp = await client.get("/api/images")
+    img = resp.json()[0]
+    for field in ("id", "repository", "tag"):
+        assert field in img
+
+
+@pytest.mark.asyncio
+async def test_pull_image_returns_202(client):
+    resp = await client.post("/api/images/pull", json={"image": "ubuntu:22.04"})
+    assert resp.status_code == 202
+    assert resp.json()["accepted"] is True
+
+
+@pytest.mark.asyncio
+async def test_pull_image_invalid_name(client):
+    resp = await client.post("/api/images/pull", json={"image": "bad image name!"})
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_remove_image(client):
+    resp = await client.delete("/api/images/abc123def456abc1")
+    assert resp.status_code == 200
+    assert resp.json()["removed"] is True
+
+
+@pytest.mark.asyncio
+async def test_remove_image_invalid_id(client):
+    resp = await client.delete("/api/images/not-valid-hex-id!")
+    assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_docker_prune(client):
+    resp = await client.post("/api/docker/prune")
+    assert resp.status_code == 202
+    assert resp.json()["accepted"] is True
+
+
+@pytest.mark.asyncio
+async def test_docker_routes_worker_unavailable():
+    async def unavailable(*a, **kw):
+        raise WorkerUnavailableError("no socket")
+    with patch("api.uds_client.send_request", side_effect=unavailable):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+            resp = await c.get("/api/containers")
+    assert resp.status_code == 503
+
+
+# ===========================================================================
+# Backup Jobs — /api/backup
+# ===========================================================================
+
+@pytest.mark.asyncio
+async def test_list_backup_jobs(client):
+    resp = await client.get("/api/backup/jobs")
+    assert resp.status_code == 200
+    assert isinstance(resp.json(), list)
+
+
+@pytest.mark.asyncio
+async def test_list_backup_jobs_has_fields(client):
+    resp = await client.get("/api/backup/jobs")
+    job = resp.json()[0]
+    for field in ("backup_id", "name", "source_vg", "dest_protocol"):
+        assert field in job
+
+
+@pytest.mark.asyncio
+async def test_create_backup_job_rsync(client):
+    resp = await client.post("/api/backup/jobs", json={
+        "name": "daily",
+        "source_vg": "traid_vg",
+        "dest_protocol": "rsync_local",
+        "dest_path": "/mnt/backup",
+        "interval_hours": 24,
+    })
+    assert resp.status_code == 201
+    assert "backup_id" in resp.json()
+
+
+@pytest.mark.asyncio
+async def test_create_backup_job_nfs(client):
+    resp = await client.post("/api/backup/jobs", json={
+        "name": "weekly_nfs",
+        "source_vg": "traid_vg",
+        "dest_protocol": "nfs",
+        "dest_path": "nas:/backup",
+        "interval_hours": 168,
+    })
+    assert resp.status_code == 201
+
+
+@pytest.mark.asyncio
+async def test_create_backup_job_invalid_protocol(client):
+    resp = await client.post("/api/backup/jobs", json={
+        "name": "j",
+        "source_vg": "vg",
+        "dest_protocol": "ftp",
+        "dest_path": "/tmp",
+        "interval_hours": 24,
+    })
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_create_backup_job_interval_too_low(client):
+    resp = await client.post("/api/backup/jobs", json={
+        "name": "j", "source_vg": "vg",
+        "dest_protocol": "rsync_local", "dest_path": "/tmp",
+        "interval_hours": 0,
+    })
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_create_backup_job_name_forwarded():
+    captured = {}
+
+    async def capture(action, params=None, timeout=30.0):
+        captured.update(params or {})
+        return {"backup_id": _FAKE_JOB_ID, "name": "daily", "source_vg": "vg", "history": []}
+
+    with patch("api.uds_client.send_request", side_effect=capture):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+            await c.post("/api/backup/jobs", json={
+                "name": "daily", "source_vg": "traid_vg",
+                "dest_protocol": "rsync_local", "dest_path": "/mnt/backup",
+                "interval_hours": 24,
+            })
+
+    assert captured.get("name") == "daily"
+    assert captured.get("source_vg") == "traid_vg"
+
+
+@pytest.mark.asyncio
+async def test_delete_backup_job(client):
+    resp = await client.delete(f"/api/backup/jobs/{_FAKE_JOB_ID}")
+    assert resp.status_code == 200
+    assert resp.json()["deleted"] is True
+
+
+@pytest.mark.asyncio
+async def test_delete_backup_job_invalid_id(client):
+    resp = await client.delete("/api/backup/jobs/not-a-uuid")
+    assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_run_backup_now(client):
+    resp = await client.post(f"/api/backup/jobs/{_FAKE_JOB_ID}/run")
+    assert resp.status_code == 202
+    assert resp.json()["accepted"] is True
+
+
+@pytest.mark.asyncio
+async def test_run_backup_now_invalid_id(client):
+    resp = await client.post("/api/backup/jobs/bad-id/run")
+    assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_backup_job_history(client):
+    resp = await client.get(f"/api/backup/jobs/{_FAKE_JOB_ID}/history")
+    assert resp.status_code == 200
+    assert isinstance(resp.json(), list)
+    assert resp.json()[0]["status"] == "ok"
+
+
+@pytest.mark.asyncio
+async def test_backup_job_history_invalid_id(client):
+    resp = await client.get("/api/backup/jobs/bad-id/history")
+    assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_backup_routes_worker_unavailable():
+    async def unavailable(*a, **kw):
+        raise WorkerUnavailableError("no socket")
+    with patch("api.uds_client.send_request", side_effect=unavailable):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+            resp = await c.get("/api/backup/jobs")
+    assert resp.status_code == 503
+
+
+# ===========================================================================
+# Sharing — /api/sharing/nfs and /api/sharing/smb
+# ===========================================================================
+
+@pytest.mark.asyncio
+async def test_list_nfs_exports(client):
+    resp = await client.get("/api/sharing/nfs")
+    assert resp.status_code == 200
+    assert isinstance(resp.json(), list)
+    assert resp.json()[0]["path"] == "/srv/traid/data"
+
+
+@pytest.mark.asyncio
+async def test_add_nfs_export(client):
+    resp = await client.post("/api/sharing/nfs", json={
+        "path": "/srv/traid/data",
+        "clients": "192.168.1.0/24",
+        "options": "rw,sync,no_subtree_check",
+    })
+    assert resp.status_code == 201
+    assert resp.json()["added"] is True
+
+
+@pytest.mark.asyncio
+async def test_add_nfs_export_invalid_path(client):
+    resp = await client.post("/api/sharing/nfs", json={
+        "path": "/etc/passwd",
+        "clients": "*",
+        "options": "rw",
+    })
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_add_nfs_export_path_traversal(client):
+    resp = await client.post("/api/sharing/nfs", json={
+        "path": "/srv/traid/../etc",
+        "clients": "*",
+        "options": "rw",
+    })
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_add_nfs_export_clients_injection(client):
+    resp = await client.post("/api/sharing/nfs", json={
+        "path": "/srv/traid/data",
+        "clients": "192.168.1.1; rm -rf /",
+        "options": "rw",
+    })
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_remove_nfs_export(client):
+    resp = await client.request("DELETE", "/api/sharing/nfs",
+                                json={"path": "/srv/traid/data"})
+    assert resp.status_code == 200
+    assert resp.json()["removed"] is True
+
+
+@pytest.mark.asyncio
+async def test_remove_nfs_export_invalid_path(client):
+    resp = await client.request("DELETE", "/api/sharing/nfs",
+                                json={"path": "/home/user/data"})
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_list_smb_shares(client):
+    resp = await client.get("/api/sharing/smb")
+    assert resp.status_code == 200
+    assert isinstance(resp.json(), list)
+    assert resp.json()[0]["name"] == "myshare"
+
+
+@pytest.mark.asyncio
+async def test_add_smb_share(client):
+    resp = await client.post("/api/sharing/smb", json={
+        "name": "myshare",
+        "path": "/srv/traid/data",
+        "comment": "Test share",
+        "public": False,
+        "writable": True,
+    })
+    assert resp.status_code == 201
+    assert resp.json()["added"] is True
+
+
+@pytest.mark.asyncio
+async def test_add_smb_share_invalid_name(client):
+    resp = await client.post("/api/sharing/smb", json={
+        "name": "bad name!",
+        "path": "/srv/traid/data",
+    })
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_add_smb_share_invalid_path(client):
+    resp = await client.post("/api/sharing/smb", json={
+        "name": "share",
+        "path": "/home/user/data",
+    })
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_add_smb_share_comment_too_long(client):
+    resp = await client.post("/api/sharing/smb", json={
+        "name": "share",
+        "path": "/srv/traid/data",
+        "comment": "x" * 201,
+    })
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_remove_smb_share(client):
+    resp = await client.delete("/api/sharing/smb/myshare")
+    assert resp.status_code == 200
+    assert resp.json()["removed"] is True
+
+
+@pytest.mark.asyncio
+async def test_remove_smb_share_invalid_name(client):
+    resp = await client.delete("/api/sharing/smb/bad name!")
+    assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_sharing_routes_worker_unavailable():
+    async def unavailable(*a, **kw):
+        raise WorkerUnavailableError("no socket")
+    with patch("api.uds_client.send_request", side_effect=unavailable):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+            resp = await c.get("/api/sharing/nfs")
+    assert resp.status_code == 503
+
+
+@pytest.mark.asyncio
+async def test_sharing_worker_error_400():
+    async def fail(*a, **kw):
+        raise WorkerError("VALIDATION_ERROR", "bad input")
+    with patch("api.uds_client.send_request", side_effect=fail):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+            resp = await c.get("/api/sharing/smb")
+    assert resp.status_code == 400

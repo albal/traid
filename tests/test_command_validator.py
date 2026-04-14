@@ -885,3 +885,624 @@ def test_btrfs_receive_bad_file_rejected():
         validate_request({"action": "btrfs_receive",
                           "params": {"vg_name": "traid_vg",
                                      "source_file": "backup.zip"}})
+
+
+# ---------------------------------------------------------------------------
+# Btrfs scrub pause / resume / last_result
+# ---------------------------------------------------------------------------
+
+def test_btrfs_scrub_pause_valid():
+    action, params = validate_request({"action": "btrfs_scrub_pause",
+                                       "params": {"vg_name": "traid_vg"}})
+    assert action == "btrfs_scrub_pause"
+    assert params["vg_name"] == "traid_vg"
+
+def test_btrfs_scrub_resume_valid():
+    action, params = validate_request({"action": "btrfs_scrub_resume",
+                                       "params": {"vg_name": "traid_vg"}})
+    assert action == "btrfs_scrub_resume"
+    assert params["vg_name"] == "traid_vg"
+
+def test_btrfs_scrub_last_result_valid():
+    action, params = validate_request({"action": "btrfs_scrub_last_result",
+                                       "params": {"vg_name": "traid_vg"}})
+    assert action == "btrfs_scrub_last_result"
+    assert params["vg_name"] == "traid_vg"
+
+def test_btrfs_scrub_pause_invalid_vg():
+    with pytest.raises(ValidationError):
+        validate_request({"action": "btrfs_scrub_pause",
+                          "params": {"vg_name": "0bad"}})
+
+def test_btrfs_scrub_resume_extra_param_rejected():
+    with pytest.raises(ValidationError, match="unexpected param keys"):
+        validate_request({"action": "btrfs_scrub_resume",
+                          "params": {"vg_name": "traid_vg", "evil": "x"}})
+
+
+# ---------------------------------------------------------------------------
+# VM management
+# ---------------------------------------------------------------------------
+
+def test_vm_list_valid():
+    action, params = validate_request({"action": "vm_list"})
+    assert action == "vm_list"
+    assert params == {}
+
+def test_vm_list_isos_valid():
+    action, _ = validate_request({"action": "vm_list_isos"})
+    assert action == "vm_list_isos"
+
+def test_vm_info_valid():
+    action, params = validate_request({"action": "vm_info",
+                                       "params": {"name": "debian12"}})
+    assert action == "vm_info"
+    assert params["name"] == "debian12"
+
+def test_vm_info_invalid_name():
+    with pytest.raises(ValidationError):
+        validate_request({"action": "vm_info",
+                          "params": {"name": "bad name!"}})
+
+def test_vm_info_name_too_long():
+    with pytest.raises(ValidationError):
+        validate_request({"action": "vm_info",
+                          "params": {"name": "a" * 65}})
+
+def test_vm_action_start():
+    action, params = validate_request({"action": "vm_action",
+                                       "params": {"name": "vm1", "action": "start"}})
+    assert action == "vm_action"
+    assert params["action"] == "start"
+
+def test_vm_action_shutdown():
+    _, params = validate_request({"action": "vm_action",
+                                  "params": {"name": "vm1", "action": "shutdown"}})
+    assert params["action"] == "shutdown"
+
+def test_vm_action_destroy():
+    _, params = validate_request({"action": "vm_action",
+                                  "params": {"name": "vm1", "action": "destroy"}})
+    assert params["action"] == "destroy"
+
+def test_vm_action_suspend():
+    _, params = validate_request({"action": "vm_action",
+                                  "params": {"name": "vm1", "action": "suspend"}})
+    assert params["action"] == "suspend"
+
+def test_vm_action_resume():
+    _, params = validate_request({"action": "vm_action",
+                                  "params": {"name": "vm1", "action": "resume"}})
+    assert params["action"] == "resume"
+
+def test_vm_action_invalid_action():
+    with pytest.raises(ValidationError):
+        validate_request({"action": "vm_action",
+                          "params": {"name": "vm1", "action": "explode"}})
+
+def test_vm_action_injection_in_name():
+    with pytest.raises(ValidationError):
+        validate_request({"action": "vm_action",
+                          "params": {"name": "vm1; rm -rf /", "action": "start"}})
+
+def test_vm_create_valid():
+    action, params = validate_request({
+        "action": "vm_create",
+        "params": {"name": "myvm", "iso": "debian12.iso",
+                   "ram_mb": 2048, "vcpus": 2, "disk_gb": 20},
+    })
+    assert action == "vm_create"
+    assert params["name"] == "myvm"
+    assert params["iso"] == "debian12.iso"
+    assert params["ram_mb"] == 2048
+    assert params["vcpus"] == 2
+    assert params["disk_gb"] == 20
+
+def test_vm_create_invalid_iso_no_extension():
+    with pytest.raises(ValidationError):
+        validate_request({
+            "action": "vm_create",
+            "params": {"name": "vm", "iso": "debian12",
+                       "ram_mb": 2048, "vcpus": 2, "disk_gb": 20},
+        })
+
+def test_vm_create_iso_path_traversal_rejected():
+    with pytest.raises(ValidationError):
+        validate_request({
+            "action": "vm_create",
+            "params": {"name": "vm", "iso": "../etc/passwd.iso",
+                       "ram_mb": 2048, "vcpus": 2, "disk_gb": 20},
+        })
+
+def test_vm_create_ram_too_low():
+    with pytest.raises(ValidationError):
+        validate_request({
+            "action": "vm_create",
+            "params": {"name": "vm", "iso": "d.iso",
+                       "ram_mb": 32, "vcpus": 2, "disk_gb": 20},
+        })
+
+def test_vm_create_vcpus_too_high():
+    with pytest.raises(ValidationError):
+        validate_request({
+            "action": "vm_create",
+            "params": {"name": "vm", "iso": "d.iso",
+                       "ram_mb": 1024, "vcpus": 65, "disk_gb": 20},
+        })
+
+def test_vm_delete_valid():
+    action, params = validate_request({"action": "vm_delete",
+                                       "params": {"name": "myvm"}})
+    assert action == "vm_delete"
+    assert params["name"] == "myvm"
+
+def test_vm_delete_keep_storage_true():
+    _, params = validate_request({"action": "vm_delete",
+                                  "params": {"name": "vm", "keep_storage": True}})
+    assert params["keep_storage"] is True
+
+def test_vm_delete_keep_storage_false():
+    _, params = validate_request({"action": "vm_delete",
+                                  "params": {"name": "vm", "keep_storage": False}})
+    assert params["keep_storage"] is False
+
+def test_vm_list_extra_param_rejected():
+    with pytest.raises(ValidationError, match="unexpected param keys"):
+        validate_request({"action": "vm_list", "params": {"evil": "x"}})
+
+
+# ---------------------------------------------------------------------------
+# Docker
+# ---------------------------------------------------------------------------
+
+def test_docker_list_containers_no_params():
+    action, params = validate_request({"action": "docker_list_containers"})
+    assert action == "docker_list_containers"
+    assert params == {}
+
+def test_docker_list_containers_all_true():
+    _, params = validate_request({"action": "docker_list_containers",
+                                  "params": {"all": True}})
+    assert params["all"] is True
+
+def test_docker_list_containers_all_false():
+    _, params = validate_request({"action": "docker_list_containers",
+                                  "params": {"all": False}})
+    assert params["all"] is False
+
+def test_docker_container_action_start():
+    action, params = validate_request({
+        "action": "docker_container_action",
+        "params": {"container_id": "abc1234567890abc", "action": "start"},
+    })
+    assert action == "docker_container_action"
+    assert params["action"] == "start"
+
+def test_docker_container_action_stop():
+    _, params = validate_request({
+        "action": "docker_container_action",
+        "params": {"container_id": "abc1234567890abc", "action": "stop"},
+    })
+    assert params["action"] == "stop"
+
+def test_docker_container_action_rm():
+    _, params = validate_request({
+        "action": "docker_container_action",
+        "params": {"container_id": "abc1234567890abc", "action": "rm"},
+    })
+    assert params["action"] == "rm"
+
+def test_docker_container_action_invalid():
+    with pytest.raises(ValidationError):
+        validate_request({
+            "action": "docker_container_action",
+            "params": {"container_id": "abc123", "action": "delete"},
+        })
+
+def test_docker_container_action_injection():
+    with pytest.raises(ValidationError):
+        validate_request({
+            "action": "docker_container_action",
+            "params": {"container_id": "abc; rm -rf /", "action": "stop"},
+        })
+
+def test_docker_container_logs_valid():
+    action, params = validate_request({
+        "action": "docker_container_logs",
+        "params": {"container_id": "abc1234567890abc", "lines": 100},
+    })
+    assert action == "docker_container_logs"
+    assert params["lines"] == 100
+
+def test_docker_container_logs_lines_too_high():
+    with pytest.raises(ValidationError):
+        validate_request({
+            "action": "docker_container_logs",
+            "params": {"container_id": "abc123", "lines": 99999},
+        })
+
+def test_docker_container_logs_lines_zero():
+    with pytest.raises(ValidationError):
+        validate_request({
+            "action": "docker_container_logs",
+            "params": {"container_id": "abc123", "lines": 0},
+        })
+
+def test_docker_list_images_valid():
+    action, _ = validate_request({"action": "docker_list_images"})
+    assert action == "docker_list_images"
+
+def test_docker_system_prune_valid():
+    action, _ = validate_request({"action": "docker_system_prune"})
+    assert action == "docker_system_prune"
+
+def test_docker_pull_image_valid():
+    action, params = validate_request({
+        "action": "docker_pull_image",
+        "params": {"image": "ubuntu:22.04"},
+    })
+    assert action == "docker_pull_image"
+    assert params["image"] == "ubuntu:22.04"
+
+def test_docker_pull_image_with_registry():
+    _, params = validate_request({
+        "action": "docker_pull_image",
+        "params": {"image": "ghcr.io/user/myapp:latest"},
+    })
+    assert "ghcr.io" in params["image"]
+
+def test_docker_pull_image_invalid():
+    with pytest.raises(ValidationError):
+        validate_request({
+            "action": "docker_pull_image",
+            "params": {"image": "bad image name!"},
+        })
+
+def test_docker_remove_image_valid():
+    action, params = validate_request({
+        "action": "docker_remove_image",
+        "params": {"image_id": "abc123def456abc1"},
+    })
+    assert action == "docker_remove_image"
+
+def test_docker_remove_image_force():
+    _, params = validate_request({
+        "action": "docker_remove_image",
+        "params": {"image_id": "abc123", "force": True},
+    })
+    assert params["force"] is True
+
+def test_docker_remove_image_invalid_id():
+    with pytest.raises(ValidationError):
+        validate_request({
+            "action": "docker_remove_image",
+            "params": {"image_id": "bad id!"},
+        })
+
+
+# ---------------------------------------------------------------------------
+# Backup jobs
+# ---------------------------------------------------------------------------
+
+def test_backup_list_jobs_valid():
+    action, _ = validate_request({"action": "backup_list_jobs"})
+    assert action == "backup_list_jobs"
+
+def test_backup_create_job_rsync_local():
+    action, params = validate_request({
+        "action": "backup_create_job",
+        "params": {
+            "name": "daily", "source_vg": "traid_vg",
+            "dest_protocol": "rsync_local", "dest_path": "/mnt/backup",
+            "interval_hours": 24,
+        },
+    })
+    assert action == "backup_create_job"
+    assert params["dest_protocol"] == "rsync_local"
+    assert params["interval_hours"] == 24
+
+def test_backup_create_job_nfs():
+    _, params = validate_request({
+        "action": "backup_create_job",
+        "params": {
+            "name": "weekly", "source_vg": "traid_vg",
+            "dest_protocol": "nfs", "dest_path": "nas:/backup",
+            "interval_hours": 168,
+        },
+    })
+    assert params["dest_protocol"] == "nfs"
+
+def test_backup_create_job_cifs():
+    _, params = validate_request({
+        "action": "backup_create_job",
+        "params": {
+            "name": "cifs_job", "source_vg": "vg",
+            "dest_protocol": "cifs", "dest_path": "//nas/share",
+            "interval_hours": 24,
+            "dest_host": "nas.local",
+            "dest_cifs_user": "admin", "dest_cifs_pass": "pass",
+        },
+    })
+    assert params["dest_cifs_user"] == "admin"
+
+def test_backup_create_job_btrfs_send():
+    _, params = validate_request({
+        "action": "backup_create_job",
+        "params": {
+            "name": "btrfs_job", "source_vg": "vg",
+            "dest_protocol": "btrfs_send", "dest_path": "/mnt/streams",
+            "interval_hours": 48,
+        },
+    })
+    assert params["dest_protocol"] == "btrfs_send"
+
+def test_backup_create_job_invalid_protocol():
+    with pytest.raises(ValidationError):
+        validate_request({
+            "action": "backup_create_job",
+            "params": {
+                "name": "j", "source_vg": "vg",
+                "dest_protocol": "ftp", "dest_path": "/tmp",
+                "interval_hours": 24,
+            },
+        })
+
+def test_backup_create_job_interval_too_low():
+    with pytest.raises(ValidationError):
+        validate_request({
+            "action": "backup_create_job",
+            "params": {
+                "name": "j", "source_vg": "vg",
+                "dest_protocol": "rsync_local", "dest_path": "/tmp",
+                "interval_hours": 0,
+            },
+        })
+
+def test_backup_create_job_interval_too_high():
+    with pytest.raises(ValidationError):
+        validate_request({
+            "action": "backup_create_job",
+            "params": {
+                "name": "j", "source_vg": "vg",
+                "dest_protocol": "rsync_local", "dest_path": "/tmp",
+                "interval_hours": 9999,
+            },
+        })
+
+def test_backup_create_job_invalid_vg():
+    with pytest.raises(ValidationError):
+        validate_request({
+            "action": "backup_create_job",
+            "params": {
+                "name": "j", "source_vg": "0invalid",
+                "dest_protocol": "rsync_local", "dest_path": "/tmp",
+                "interval_hours": 24,
+            },
+        })
+
+def test_backup_create_job_cifs_cred_injection():
+    with pytest.raises(ValidationError):
+        validate_request({
+            "action": "backup_create_job",
+            "params": {
+                "name": "j", "source_vg": "vg",
+                "dest_protocol": "cifs", "dest_path": "//nas/share",
+                "interval_hours": 24,
+                "dest_cifs_user": "admin\nrm -rf /",
+            },
+        })
+
+def test_backup_delete_job_valid_uuid():
+    action, params = validate_request({
+        "action": "backup_delete_job",
+        "params": {"backup_id": "550e8400-e29b-41d4-a716-446655440000"},
+    })
+    assert action == "backup_delete_job"
+    assert params["backup_id"] == "550e8400-e29b-41d4-a716-446655440000"
+
+def test_backup_delete_job_invalid_uuid():
+    with pytest.raises(ValidationError):
+        validate_request({
+            "action": "backup_delete_job",
+            "params": {"backup_id": "not-a-uuid"},
+        })
+
+def test_backup_run_now_valid():
+    action, params = validate_request({
+        "action": "backup_run_now",
+        "params": {"backup_id": "550e8400-e29b-41d4-a716-446655440000"},
+    })
+    assert action == "backup_run_now"
+
+def test_backup_job_history_valid():
+    action, params = validate_request({
+        "action": "backup_job_history",
+        "params": {"backup_id": "550e8400-e29b-41d4-a716-446655440000"},
+    })
+    assert action == "backup_job_history"
+
+
+# ---------------------------------------------------------------------------
+# NFS sharing
+# ---------------------------------------------------------------------------
+
+def test_nfs_list_exports_valid():
+    action, _ = validate_request({"action": "nfs_list_exports"})
+    assert action == "nfs_list_exports"
+
+def test_nfs_add_export_valid():
+    action, params = validate_request({
+        "action": "nfs_add_export",
+        "params": {
+            "path": "/srv/traid/data",
+            "clients": "192.168.1.0/24",
+            "options": "rw,sync,no_subtree_check",
+        },
+    })
+    assert action == "nfs_add_export"
+    assert params["path"] == "/srv/traid/data"
+    assert params["clients"] == "192.168.1.0/24"
+
+def test_nfs_add_export_mnt_path():
+    _, params = validate_request({
+        "action": "nfs_add_export",
+        "params": {
+            "path": "/mnt/traid/data",
+            "clients": "*",
+            "options": "ro",
+        },
+    })
+    assert params["path"] == "/mnt/traid/data"
+
+def test_nfs_add_export_varlib_path():
+    _, params = validate_request({
+        "action": "nfs_add_export",
+        "params": {
+            "path": "/var/lib/traid/data",
+            "clients": "10.0.0.0/8",
+            "options": "rw",
+        },
+    })
+    assert params["path"] == "/var/lib/traid/data"
+
+def test_nfs_add_export_invalid_path():
+    with pytest.raises(ValidationError):
+        validate_request({
+            "action": "nfs_add_export",
+            "params": {
+                "path": "/etc/passwd",
+                "clients": "*",
+                "options": "rw",
+            },
+        })
+
+def test_nfs_add_export_path_traversal():
+    with pytest.raises(ValidationError):
+        validate_request({
+            "action": "nfs_add_export",
+            "params": {
+                "path": "/srv/traid/../etc",
+                "clients": "*",
+                "options": "rw",
+            },
+        })
+
+def test_nfs_add_export_clients_injection():
+    with pytest.raises(ValidationError):
+        validate_request({
+            "action": "nfs_add_export",
+            "params": {
+                "path": "/srv/traid/data",
+                "clients": "192.168.1.1; cat /etc/shadow",
+                "options": "rw",
+            },
+        })
+
+def test_nfs_add_export_options_injection():
+    with pytest.raises(ValidationError):
+        validate_request({
+            "action": "nfs_add_export",
+            "params": {
+                "path": "/srv/traid/data",
+                "clients": "*",
+                "options": "rw;rm -rf /",
+            },
+        })
+
+def test_nfs_remove_export_valid():
+    action, params = validate_request({
+        "action": "nfs_remove_export",
+        "params": {"path": "/srv/traid/data"},
+    })
+    assert action == "nfs_remove_export"
+    assert params["path"] == "/srv/traid/data"
+
+def test_nfs_remove_export_invalid_path():
+    with pytest.raises(ValidationError):
+        validate_request({
+            "action": "nfs_remove_export",
+            "params": {"path": "/home/user/data"},
+        })
+
+
+# ---------------------------------------------------------------------------
+# Samba sharing
+# ---------------------------------------------------------------------------
+
+def test_samba_list_shares_valid():
+    action, _ = validate_request({"action": "samba_list_shares"})
+    assert action == "samba_list_shares"
+
+def test_samba_add_share_minimal():
+    action, params = validate_request({
+        "action": "samba_add_share",
+        "params": {
+            "name": "myshare",
+            "path": "/srv/traid/data",
+        },
+    })
+    assert action == "samba_add_share"
+    assert params["name"] == "myshare"
+    assert params["path"] == "/srv/traid/data"
+
+def test_samba_add_share_full():
+    _, params = validate_request({
+        "action": "samba_add_share",
+        "params": {
+            "name": "pubdata",
+            "path": "/mnt/traid/shared",
+            "comment": "Public data share",
+            "public": True,
+            "writable": False,
+        },
+    })
+    assert params["public"] is True
+    assert params["writable"] is False
+    assert params["comment"] == "Public data share"
+
+def test_samba_add_share_invalid_name():
+    with pytest.raises(ValidationError):
+        validate_request({
+            "action": "samba_add_share",
+            "params": {"name": "bad name!", "path": "/srv/traid/data"},
+        })
+
+def test_samba_add_share_name_too_long():
+    with pytest.raises(ValidationError):
+        validate_request({
+            "action": "samba_add_share",
+            "params": {"name": "a" * 51, "path": "/srv/traid/data"},
+        })
+
+def test_samba_add_share_invalid_path():
+    with pytest.raises(ValidationError):
+        validate_request({
+            "action": "samba_add_share",
+            "params": {"name": "myshare", "path": "/home/user/data"},
+        })
+
+def test_samba_add_share_comment_too_long():
+    with pytest.raises(ValidationError):
+        validate_request({
+            "action": "samba_add_share",
+            "params": {
+                "name": "myshare",
+                "path": "/srv/traid/data",
+                "comment": "x" * 201,
+            },
+        })
+
+def test_samba_remove_share_valid():
+    action, params = validate_request({
+        "action": "samba_remove_share",
+        "params": {"name": "myshare"},
+    })
+    assert action == "samba_remove_share"
+    assert params["name"] == "myshare"
+
+def test_samba_remove_share_invalid_name():
+    with pytest.raises(ValidationError):
+        validate_request({
+            "action": "samba_remove_share",
+            "params": {"name": "bad name!"},
+        })

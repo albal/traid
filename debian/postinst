@@ -9,6 +9,13 @@ case "$1" in
         # regenerated from scratch so stale bytecode is never an issue.
         python3.13 -m venv "$TRAID_DIR/venv"
 
+        # btrfsutil is a system C extension (python3-btrfsutil) not on PyPI.
+        # Copy it into the venv so the worker daemon can import it as root.
+        BTRFSUTIL_SO=$(find /usr/lib/python3 -name 'btrfsutil.cpython-*.so' 2>/dev/null | head -1)
+        if [ -n "$BTRFSUTIL_SO" ]; then
+            cp "$BTRFSUTIL_SO" "$TRAID_DIR/venv/lib/python3.13/site-packages/"
+        fi
+
         # Install traid and all dependencies from the pre-built wheels bundled in the package.
         "$TRAID_DIR/venv/bin/pip" install \
             --no-index \

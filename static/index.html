@@ -46,9 +46,34 @@
 </header>
 
 <!-- =========================================================
+     TOP-LEVEL TAB BAR
+========================================================= -->
+<nav class="bg-gray-800 border-b border-gray-700 px-6">
+  <div class="max-w-6xl mx-auto flex gap-1">
+    <template x-for="tab in [{id:'storage',label:'Storage'},{id:'vms',label:'VMs'},{id:'containers',label:'Containers'},{id:'backups',label:'Backups'},{id:'sharing',label:'Sharing'}]" :key="tab.id">
+      <button @click="activeTab = tab.id;
+                      tab.id === 'vms' && (loadVms(), loadVmIsos());
+                      tab.id === 'containers' && (loadContainers(), loadDockerImages());
+                      tab.id === 'backups' && loadBackupJobs();
+                      tab.id === 'sharing' && (loadNfsExports(), loadSmbShares())"
+              :class="activeTab === tab.id
+                ? 'border-b-2 border-blue-400 text-blue-400'
+                : 'text-gray-400 hover:text-gray-200'"
+              class="px-4 py-2.5 text-sm font-medium transition-colors"
+              x-text="tab.label"></button>
+    </template>
+  </div>
+</nav>
+
+<!-- =========================================================
      MAIN CONTENT
 ========================================================= -->
 <main class="p-6 max-w-6xl mx-auto">
+
+  <!-- ============================================================
+       STORAGE TAB
+  ============================================================ -->
+  <div x-show="activeTab === 'storage'">
 
   <!-- Error banner -->
   <div x-show="errorMsg"
@@ -949,13 +974,20 @@
              class="text-center text-gray-500 text-sm py-6">No subvolumes.</div>
         <template x-for="sv in (btrfsSubvols[fsModal] || []).filter(s => !s.is_snapshot)" :key="sv.id">
           <div class="bg-gray-700/50 rounded-lg px-3 py-2 flex items-center justify-between">
-            <div>
+            <div class="flex items-center gap-2">
               <span class="text-sm font-mono text-gray-200" x-text="sv.path"></span>
-              <span class="ml-2 text-xs text-gray-500" x-text="'ID ' + sv.id"></span>
+              <span x-show="sv.is_default"
+                    class="text-xs px-1.5 py-0.5 rounded bg-indigo-800/60 text-indigo-300 border border-indigo-700/50">
+                default
+              </span>
+              <span class="text-xs text-gray-500" x-text="'ID ' + sv.id"></span>
             </div>
             <div class="flex gap-1">
-              <button @click="btrfsSetDefault(fsModal, sv.id)" :disabled="fsBusy"
-                      class="text-xs px-2 py-0.5 rounded bg-gray-600 hover:bg-gray-500 text-gray-300 transition-colors" title="Set as default">
+              <button @click="btrfsSetDefault(fsModal, sv.id)"
+                      :disabled="fsBusy || sv.is_default"
+                      class="text-xs px-2 py-0.5 rounded transition-colors"
+                      :class="sv.is_default ? 'bg-gray-700 text-gray-600 cursor-default' : 'bg-gray-600 hover:bg-gray-500 text-gray-300'"
+                      title="Set as default boot subvolume">
                 Default
               </button>
               <button @click="btrfsDeleteSubvol(fsModal, sv.path, false)" :disabled="fsBusy"
@@ -1011,25 +1043,80 @@
       </div>
 
       <!-- SCRUB TAB -->
-      <div x-show="fsTab === 'scrub'" class="space-y-4">
+      <div x-show="fsTab === 'scrub'" class="space-y-4"
+           x-init="btrfsScrubStatus(fsModal); loadScrubLastResult(fsModal)">
         <div class="text-xs text-gray-400">Scrub reads all data and verifies checksums against parity. Runs in background — check the task monitor for progress.</div>
-        <div class="flex gap-2">
+        <div class="flex flex-wrap gap-2">
           <button @click="btrfsScrubStart(fsModal)" :disabled="fsBusy"
                   class="px-4 py-2 rounded text-sm bg-indigo-700 hover:bg-indigo-600 text-white transition-colors disabled:opacity-40">
             Start Scrub
           </button>
+          <template x-if="scrubRunning[fsModal]">
+            <button @click="btrfsScrubPause(fsModal)"
+                    class="px-4 py-2 rounded text-sm bg-yellow-700 hover:bg-yellow-600 text-white transition-colors">
+              Pause
+            </button>
+          </template>
+          <template x-if="(scrubParsed[fsModal] || {}).status === 'paused'">
+            <button @click="btrfsScrubResume(fsModal)"
+                    class="px-4 py-2 rounded text-sm bg-green-700 hover:bg-green-600 text-white transition-colors">
+              Resume
+            </button>
+          </template>
           <button @click="btrfsScrubCancel(fsModal)"
                   class="px-4 py-2 rounded text-sm bg-gray-700 hover:bg-gray-600 text-gray-300 transition-colors">
-            Cancel Scrub
+            Cancel
           </button>
           <button @click="btrfsScrubStatus(fsModal)"
                   class="px-4 py-2 rounded text-sm bg-gray-700 hover:bg-gray-600 text-gray-300 transition-colors">
-            Refresh Status
+            Refresh
           </button>
         </div>
+        <!-- Live status (raw) -->
         <div x-show="scrubStatus[fsModal]"
              class="bg-gray-900 rounded-lg p-3 font-mono text-xs text-gray-300 whitespace-pre-wrap"
              x-text="scrubStatus[fsModal]"></div>
+        <!-- Last Scrub Results -->
+        <div class="border-t border-gray-700 pt-3">
+          <div class="flex items-center justify-between mb-2">
+            <span class="text-xs text-gray-400 font-semibold">Last Scrub Result</span>
+            <button @click="loadScrubLastResult(fsModal)"
+                    class="text-xs text-gray-500 hover:text-gray-300 transition-colors">↻ Refresh</button>
+          </div>
+          <template x-if="!(scrubLastResult[fsModal] || {}).available">
+            <div class="text-xs text-gray-500 italic">No completed scrub recorded yet.</div>
+          </template>
+          <template x-if="(scrubLastResult[fsModal] || {}).available">
+            <div class="bg-gray-900 rounded-lg p-3 text-xs space-y-1">
+              <div class="flex justify-between">
+                <span class="text-gray-400">Status</span>
+                <span :class="(scrubLastResult[fsModal].error_summary || '').includes('no errors') ? 'text-green-400' : 'text-yellow-400'"
+                      x-text="scrubLastResult[fsModal].status || '—'"></span>
+              </div>
+              <div class="flex justify-between" x-show="scrubLastResult[fsModal].duration">
+                <span class="text-gray-400">Duration</span>
+                <span class="text-gray-300" x-text="scrubLastResult[fsModal].duration"></span>
+              </div>
+              <div class="flex justify-between" x-show="scrubLastResult[fsModal].error_summary">
+                <span class="text-gray-400">Errors</span>
+                <span :class="scrubLastResult[fsModal].error_summary === 'no errors found' ? 'text-green-400' : 'text-red-400'"
+                      x-text="scrubLastResult[fsModal].error_summary"></span>
+              </div>
+              <template x-if="(scrubLastResult[fsModal].read_errors || 0) + (scrubLastResult[fsModal].csum_errors || 0) + (scrubLastResult[fsModal].uncorrectable_errors || 0) > 0">
+                <div class="mt-1 grid grid-cols-2 gap-x-4 gap-y-0.5 text-gray-400">
+                  <span>Read errors</span><span class="text-red-400" x-text="scrubLastResult[fsModal].read_errors ?? '—'"></span>
+                  <span>Checksum errors</span><span class="text-red-400" x-text="scrubLastResult[fsModal].csum_errors ?? '—'"></span>
+                  <span>Uncorrectable</span><span class="text-red-400" x-text="scrubLastResult[fsModal].uncorrectable_errors ?? '—'"></span>
+                  <span>Corrected</span><span class="text-green-400" x-text="scrubLastResult[fsModal].corrected_errors ?? '—'"></span>
+                </div>
+              </template>
+              <div class="flex justify-between text-gray-500 pt-1 border-t border-gray-700">
+                <span>Completed at</span>
+                <span x-text="scrubLastResult[fsModal].timestamp ? fmtTime(scrubLastResult[fsModal].timestamp) : '—'"></span>
+              </div>
+            </div>
+          </template>
+        </div>
       </div>
 
       <!-- BALANCE TAB -->
@@ -1188,6 +1275,451 @@
   </div>
 </div>
 
+  </div><!-- end storage tab -->
+
+  <!-- ============================================================
+       VMs TAB
+  ============================================================ -->
+  <div x-show="activeTab === 'vms'" x-init="activeTab === 'vms' && loadVms() && loadVmIsos()">
+
+    <div class="flex items-center justify-between mb-4">
+      <h2 class="text-base font-semibold text-gray-200">Virtual Machines</h2>
+      <button @click="loadVms()" class="text-xs text-gray-500 hover:text-gray-300">↻ Refresh</button>
+    </div>
+
+    <!-- VM list -->
+    <div class="space-y-2 mb-6">
+      <div x-show="vms.length === 0" class="text-center text-gray-500 py-8 text-sm">No VMs found. Is libvirt running?</div>
+      <template x-for="vm in vms" :key="vm.name">
+        <div class="bg-gray-800 border border-gray-700 rounded-lg px-4 py-3 flex items-center justify-between gap-4">
+          <div class="flex items-center gap-3 min-w-0">
+            <span :class="vm.state === 'running' ? 'text-green-400' : 'text-gray-500'" class="text-lg">●</span>
+            <div class="min-w-0">
+              <div class="font-mono text-sm text-gray-200" x-text="vm.name"></div>
+              <div class="text-xs text-gray-500 flex gap-3 mt-0.5">
+                <span x-text="vm.state || 'unknown'"></span>
+                <span x-show="vm.vcpus" x-text="vm.vcpus + ' vCPU'"></span>
+                <span x-show="vm.max_memory_kib" x-text="humanSize((vm.max_memory_kib||'0').replace(/\s+\w+/,'')*1024)"></span>
+                <span x-show="vm.vnc_port" class="text-blue-400" x-text="'VNC :' + vm.vnc_port"></span>
+              </div>
+            </div>
+          </div>
+          <div class="flex gap-1 flex-shrink-0">
+            <template x-if="vm.state !== 'running'">
+              <button @click="vmDoAction(vm.name,'start')" :disabled="vmBusy[vm.name]"
+                      class="text-xs px-2 py-1 rounded bg-green-700 hover:bg-green-600 text-white transition-colors disabled:opacity-40">Start</button>
+            </template>
+            <template x-if="vm.state === 'running'">
+              <button @click="vmDoAction(vm.name,'suspend')" :disabled="vmBusy[vm.name]"
+                      class="text-xs px-2 py-1 rounded bg-yellow-700 hover:bg-yellow-600 text-white transition-colors disabled:opacity-40">Pause</button>
+            </template>
+            <template x-if="vm.state === 'paused'">
+              <button @click="vmDoAction(vm.name,'resume')" :disabled="vmBusy[vm.name]"
+                      class="text-xs px-2 py-1 rounded bg-green-700 hover:bg-green-600 text-white transition-colors disabled:opacity-40">Resume</button>
+            </template>
+            <template x-if="vm.state === 'running'">
+              <button @click="vmDoAction(vm.name,'shutdown')" :disabled="vmBusy[vm.name]"
+                      class="text-xs px-2 py-1 rounded bg-gray-700 hover:bg-gray-600 text-gray-300 transition-colors disabled:opacity-40">Shutdown</button>
+            </template>
+            <button @click="deleteVm(vm.name)" :disabled="vmBusy[vm.name]"
+                    class="text-xs px-2 py-1 rounded bg-red-900/60 hover:bg-red-800/60 text-red-400 transition-colors disabled:opacity-40">Delete</button>
+          </div>
+        </div>
+      </template>
+    </div>
+
+    <!-- Create VM form -->
+    <div class="bg-gray-800 border border-gray-700 rounded-lg p-4">
+      <div class="text-sm font-semibold text-gray-300 mb-3">Create New VM</div>
+      <div class="grid grid-cols-2 md:grid-cols-3 gap-3 mb-3">
+        <div>
+          <label class="text-xs text-gray-400 block mb-1">Name</label>
+          <input x-model="vmCreateForm.name" placeholder="my-vm"
+                 class="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-sm text-gray-200 focus:outline-none focus:border-blue-400" />
+        </div>
+        <div>
+          <label class="text-xs text-gray-400 block mb-1">ISO</label>
+          <select x-model="vmCreateForm.iso"
+                  class="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-sm text-gray-200">
+            <option value="">— select ISO —</option>
+            <template x-for="iso in vmIsos" :key="iso">
+              <option :value="iso" x-text="iso"></option>
+            </template>
+          </select>
+        </div>
+        <div>
+          <label class="text-xs text-gray-400 block mb-1">RAM (MB)</label>
+          <input type="number" x-model.number="vmCreateForm.ram_mb"
+                 class="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-sm text-gray-200 focus:outline-none focus:border-blue-400" />
+        </div>
+        <div>
+          <label class="text-xs text-gray-400 block mb-1">vCPUs</label>
+          <input type="number" x-model.number="vmCreateForm.vcpus" min="1" max="64"
+                 class="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-sm text-gray-200 focus:outline-none focus:border-blue-400" />
+        </div>
+        <div>
+          <label class="text-xs text-gray-400 block mb-1">Disk (GB)</label>
+          <input type="number" x-model.number="vmCreateForm.disk_gb" min="1"
+                 class="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-sm text-gray-200 focus:outline-none focus:border-blue-400" />
+        </div>
+      </div>
+      <button @click="createVm()"
+              :disabled="vmCreateBusy || !vmCreateForm.name || !vmCreateForm.iso"
+              class="px-4 py-2 rounded text-sm bg-blue-700 hover:bg-blue-600 text-white transition-colors disabled:opacity-40">
+        Create VM
+      </button>
+    </div>
+  </div><!-- end VMs tab -->
+
+  <!-- ============================================================
+       CONTAINERS TAB
+  ============================================================ -->
+  <div x-show="activeTab === 'containers'" x-init="activeTab === 'containers' && loadContainers() && loadDockerImages()">
+
+    <div class="flex items-center justify-between mb-4">
+      <h2 class="text-base font-semibold text-gray-200">Docker Containers</h2>
+      <button @click="loadContainers()" class="text-xs text-gray-500 hover:text-gray-300">↻ Refresh</button>
+    </div>
+
+    <!-- Containers list -->
+    <div class="space-y-2 mb-6">
+      <div x-show="containers.length === 0" class="text-center text-gray-500 py-8 text-sm">No containers found. Is Docker running?</div>
+      <template x-for="c in containers" :key="c.id">
+        <div class="bg-gray-800 border border-gray-700 rounded-lg px-4 py-3 flex items-center justify-between gap-4">
+          <div class="flex items-center gap-3 min-w-0">
+            <span :class="c.state === 'running' ? 'text-green-400' : 'text-gray-500'" class="text-lg">●</span>
+            <div class="min-w-0">
+              <div class="font-mono text-sm text-gray-200" x-text="c.name"></div>
+              <div class="text-xs text-gray-500 mt-0.5">
+                <span x-text="c.image"></span>
+                <span class="mx-1">·</span>
+                <span x-text="c.status"></span>
+                <span x-show="c.ports" class="mx-1">·</span>
+                <span x-show="c.ports" class="text-blue-400" x-text="c.ports"></span>
+              </div>
+            </div>
+          </div>
+          <div class="flex gap-1 flex-shrink-0">
+            <template x-if="c.state !== 'running'">
+              <button @click="containerAction(c.id,'start')" :disabled="containersBusy[c.id]"
+                      class="text-xs px-2 py-1 rounded bg-green-700 hover:bg-green-600 text-white transition-colors disabled:opacity-40">Start</button>
+            </template>
+            <template x-if="c.state === 'running'">
+              <button @click="containerAction(c.id,'stop')" :disabled="containersBusy[c.id]"
+                      class="text-xs px-2 py-1 rounded bg-yellow-700 hover:bg-yellow-600 text-white transition-colors disabled:opacity-40">Stop</button>
+            </template>
+            <button @click="openDockerLogs(c.id)" class="text-xs px-2 py-1 rounded bg-gray-700 hover:bg-gray-600 text-gray-300 transition-colors">Logs</button>
+            <button @click="containerAction(c.id,'rm')" :disabled="containersBusy[c.id] || c.state === 'running'"
+                    class="text-xs px-2 py-1 rounded bg-red-900/60 hover:bg-red-800/60 text-red-400 transition-colors disabled:opacity-40">Remove</button>
+          </div>
+        </div>
+      </template>
+    </div>
+
+    <!-- Logs modal -->
+    <div x-show="dockerLogsModal" class="fixed inset-0 bg-black/70 z-50 flex items-center justify-center p-4">
+      <div class="bg-gray-800 rounded-xl w-full max-w-3xl flex flex-col max-h-[80vh]">
+        <div class="flex items-center justify-between px-4 py-3 border-b border-gray-700">
+          <span class="text-sm font-semibold" x-text="'Logs: ' + (dockerLogsModal || '')"></span>
+          <button @click="dockerLogsModal = null" class="text-gray-400 hover:text-gray-200 text-xl">&times;</button>
+        </div>
+        <div class="flex-1 overflow-auto p-4 font-mono text-xs text-green-400 whitespace-pre-wrap bg-gray-900 rounded-b-xl"
+             x-text="dockerLogs || (dockerLogsBusy ? 'Loading…' : 'No output')"></div>
+      </div>
+    </div>
+
+    <!-- Images + Pull -->
+    <div class="bg-gray-800 border border-gray-700 rounded-lg p-4">
+      <div class="flex items-center justify-between mb-3">
+        <span class="text-sm font-semibold text-gray-300">Images</span>
+        <div class="flex gap-2 items-center">
+          <input x-model="pullImageName" placeholder="ubuntu:22.04"
+                 class="bg-gray-700 border border-gray-600 rounded px-2 py-1 text-xs text-gray-200 focus:outline-none focus:border-blue-400 w-44" />
+          <button @click="pullDockerImage()" :disabled="pullBusy || !pullImageName"
+                  class="text-xs px-3 py-1 rounded bg-blue-700 hover:bg-blue-600 text-white transition-colors disabled:opacity-40">
+            Pull
+          </button>
+          <button @click="dockerPrune()" class="text-xs px-3 py-1 rounded bg-gray-700 hover:bg-gray-600 text-gray-300 transition-colors">
+            Prune
+          </button>
+        </div>
+      </div>
+      <div x-show="dockerImages.length === 0" class="text-center text-gray-500 py-4 text-sm">No images.</div>
+      <template x-for="img in dockerImages" :key="img.id">
+        <div class="flex items-center justify-between py-1.5 border-t border-gray-700/50 text-xs">
+          <div>
+            <span class="font-mono text-gray-300" x-text="img.repository + ':' + img.tag"></span>
+            <span class="ml-2 text-gray-500" x-text="img.size"></span>
+          </div>
+          <button @click="removeDockerImage(img.id)"
+                  class="text-red-400 hover:text-red-300 transition-colors">Remove</button>
+        </div>
+      </template>
+    </div>
+  </div><!-- end containers tab -->
+
+  <!-- ============================================================
+       BACKUPS TAB
+  ============================================================ -->
+  <div x-show="activeTab === 'backups'" x-init="activeTab === 'backups' && loadBackupJobs()">
+
+    <div class="flex items-center justify-between mb-4">
+      <h2 class="text-base font-semibold text-gray-200">Scheduled Backups</h2>
+      <button @click="loadBackupJobs()" class="text-xs text-gray-500 hover:text-gray-300">↻ Refresh</button>
+    </div>
+
+    <!-- Create backup job form -->
+    <div class="bg-gray-800 border border-gray-700 rounded-lg p-4 mb-4">
+      <div class="text-sm font-semibold text-gray-300 mb-3">New Backup Job</div>
+      <div class="grid grid-cols-2 md:grid-cols-3 gap-3 mb-3">
+        <div>
+          <label class="text-xs text-gray-400 block mb-1">Job name</label>
+          <input x-model="backupCreateForm.name" placeholder="nightly-vg1"
+                 class="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-sm text-gray-200 focus:outline-none focus:border-blue-400" />
+        </div>
+        <div>
+          <label class="text-xs text-gray-400 block mb-1">Source volume</label>
+          <select x-model="backupCreateForm.source_vg"
+                  class="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-sm text-gray-200">
+            <option value="">— select VG —</option>
+            <template x-for="vg in (volumes.vgs || [])" :key="vg.vg_name">
+              <option :value="vg.vg_name" x-text="vg.vg_name"></option>
+            </template>
+          </select>
+        </div>
+        <div>
+          <label class="text-xs text-gray-400 block mb-1">Protocol</label>
+          <select x-model="backupCreateForm.dest_protocol"
+                  class="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-sm text-gray-200">
+            <option value="rsync_local">Local rsync</option>
+            <option value="nfs">NFS</option>
+            <option value="cifs">CIFS/SMB</option>
+            <option value="btrfs_send">Btrfs send</option>
+          </select>
+        </div>
+        <div x-show="['nfs','cifs'].includes(backupCreateForm.dest_protocol)">
+          <label class="text-xs text-gray-400 block mb-1">Host</label>
+          <input x-model="backupCreateForm.dest_host" placeholder="192.168.1.100"
+                 class="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-sm text-gray-200 focus:outline-none focus:border-blue-400" />
+        </div>
+        <div>
+          <label class="text-xs text-gray-400 block mb-1" x-text="backupCreateForm.dest_protocol === 'rsync_local' ? 'Destination path' : 'Remote path / share'"></label>
+          <input x-model="backupCreateForm.dest_path" placeholder="/backup/vg1"
+                 class="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-sm text-gray-200 focus:outline-none focus:border-blue-400" />
+        </div>
+        <div>
+          <label class="text-xs text-gray-400 block mb-1">Interval (hours)</label>
+          <input type="number" x-model.number="backupCreateForm.interval_hours" min="1" max="8760"
+                 class="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-sm text-gray-200 focus:outline-none focus:border-blue-400" />
+        </div>
+        <template x-if="backupCreateForm.dest_protocol === 'cifs'">
+          <div class="col-span-2 grid grid-cols-2 gap-3">
+            <div>
+              <label class="text-xs text-gray-400 block mb-1">CIFS username</label>
+              <input x-model="backupCreateForm.dest_cifs_user"
+                     class="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-sm text-gray-200 focus:outline-none focus:border-blue-400" />
+            </div>
+            <div>
+              <label class="text-xs text-gray-400 block mb-1">CIFS password</label>
+              <input type="password" x-model="backupCreateForm.dest_cifs_pass"
+                     class="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-sm text-gray-200 focus:outline-none focus:border-blue-400" />
+            </div>
+          </div>
+        </template>
+      </div>
+      <button @click="createBackupJob()"
+              :disabled="backupCreateBusy || !backupCreateForm.name || !backupCreateForm.source_vg || !backupCreateForm.dest_path"
+              class="px-4 py-2 rounded text-sm bg-blue-700 hover:bg-blue-600 text-white transition-colors disabled:opacity-40">
+        Create Job
+      </button>
+    </div>
+
+    <!-- Job list -->
+    <div class="space-y-2">
+      <div x-show="backupJobs.length === 0" class="text-center text-gray-500 py-8 text-sm">No backup jobs configured.</div>
+      <template x-for="job in backupJobs" :key="job.backup_id">
+        <div class="bg-gray-800 border border-gray-700 rounded-lg px-4 py-3 flex items-center justify-between gap-4">
+          <div class="min-w-0">
+            <div class="text-sm text-gray-200 font-semibold" x-text="job.name"></div>
+            <div class="text-xs text-gray-500 mt-0.5 flex flex-wrap gap-x-3">
+              <span x-text="job.source_vg + ' → ' + job.dest_protocol"></span>
+              <span x-text="'Every ' + job.interval_hours + 'h'"></span>
+              <span x-show="job.last_run" x-text="'Last: ' + fmtTime(job.last_run)"></span>
+              <span :class="job.last_status === 'ok' ? 'text-green-400' : job.last_status === 'failed' ? 'text-red-400' : 'text-gray-500'"
+                    x-text="job.last_status"></span>
+            </div>
+          </div>
+          <div class="flex gap-1 flex-shrink-0">
+            <button @click="runBackupNow(job.backup_id)" :disabled="backupJobsBusy[job.backup_id]"
+                    class="text-xs px-2 py-1 rounded bg-indigo-700 hover:bg-indigo-600 text-white transition-colors disabled:opacity-40">
+              Run Now
+            </button>
+            <button @click="openBackupHistory(job.backup_id)"
+                    class="text-xs px-2 py-1 rounded bg-gray-700 hover:bg-gray-600 text-gray-300 transition-colors">
+              History
+            </button>
+            <button @click="deleteBackupJob(job.backup_id)"
+                    class="text-xs px-2 py-1 rounded bg-red-900/60 hover:bg-red-800/60 text-red-400 transition-colors">
+              Delete
+            </button>
+          </div>
+        </div>
+      </template>
+    </div>
+
+    <!-- Backup history modal -->
+    <div x-show="backupHistoryModal" class="fixed inset-0 bg-black/70 z-50 flex items-center justify-center p-4">
+      <div class="bg-gray-800 rounded-xl w-full max-w-lg">
+        <div class="flex items-center justify-between px-4 py-3 border-b border-gray-700">
+          <span class="text-sm font-semibold">Backup History</span>
+          <button @click="backupHistoryModal = null" class="text-gray-400 hover:text-gray-200 text-xl">&times;</button>
+        </div>
+        <div class="p-4 space-y-2 max-h-96 overflow-y-auto">
+          <div x-show="backupHistory.length === 0" class="text-center text-gray-500 py-4 text-sm">No history yet.</div>
+          <template x-for="(run, i) in backupHistory" :key="i">
+            <div class="flex justify-between items-center text-xs py-1.5 border-b border-gray-700/50">
+              <span class="text-gray-400" x-text="fmtTime(run.run_at)"></span>
+              <span :class="run.status === 'ok' ? 'text-green-400' : 'text-red-400'" x-text="run.status"></span>
+              <span class="text-gray-500" x-text="run.duration_s + 's'"></span>
+              <span x-show="run.error" class="text-red-400 truncate max-w-32" :title="run.error" x-text="run.error"></span>
+            </div>
+          </template>
+        </div>
+      </div>
+    </div>
+  </div><!-- end backups tab -->
+
+  <!-- ============================================================
+       SHARING TAB
+  ============================================================ -->
+  <div x-show="activeTab === 'sharing'" x-init="activeTab === 'sharing' && loadNfsExports() && loadSmbShares()">
+
+    <!-- Secondary tab bar -->
+    <div class="flex gap-1 border-b border-gray-700 mb-4">
+      <button @click="sharingTab = 'nfs'"
+              :class="sharingTab === 'nfs' ? 'border-b-2 border-blue-400 text-blue-400' : 'text-gray-400 hover:text-gray-200'"
+              class="px-4 py-2 text-sm font-medium transition-colors">NFS</button>
+      <button @click="sharingTab = 'smb'"
+              :class="sharingTab === 'smb' ? 'border-b-2 border-blue-400 text-blue-400' : 'text-gray-400 hover:text-gray-200'"
+              class="px-4 py-2 text-sm font-medium transition-colors">Samba (SMB)</button>
+    </div>
+
+    <!-- NFS PANEL -->
+    <div x-show="sharingTab === 'nfs'" class="space-y-4">
+      <!-- Add export form -->
+      <div class="bg-gray-800 border border-gray-700 rounded-lg p-4">
+        <div class="text-sm font-semibold text-gray-300 mb-3">Add NFS Export</div>
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-3 mb-3">
+          <div>
+            <label class="text-xs text-gray-400 block mb-1">Path (under /mnt/traid/…)</label>
+            <select x-model="nfsAddForm.path"
+                    class="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-sm text-gray-200">
+              <option value="">— select mount point —</option>
+              <template x-for="vg in (volumes.vgs || []).filter(v => (fsData[v.vg_name]||{}).mounted)" :key="vg.vg_name">
+                <option :value="'/mnt/traid/' + vg.vg_name" x-text="'/mnt/traid/' + vg.vg_name"></option>
+              </template>
+            </select>
+          </div>
+          <div>
+            <label class="text-xs text-gray-400 block mb-1">Clients</label>
+            <input x-model="nfsAddForm.clients" placeholder="192.168.1.0/24"
+                   class="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-sm text-gray-200 focus:outline-none focus:border-blue-400" />
+          </div>
+          <div>
+            <label class="text-xs text-gray-400 block mb-1">Options</label>
+            <input x-model="nfsAddForm.options" placeholder="rw,sync,no_subtree_check"
+                   class="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-sm text-gray-200 focus:outline-none focus:border-blue-400" />
+          </div>
+        </div>
+        <button @click="addNfsExport()" :disabled="nfsBusy || !nfsAddForm.path || !nfsAddForm.clients"
+                class="px-4 py-2 rounded text-sm bg-blue-700 hover:bg-blue-600 text-white transition-colors disabled:opacity-40">
+          Add Export
+        </button>
+      </div>
+      <!-- Export list -->
+      <div class="space-y-2">
+        <div x-show="nfsExports.length === 0" class="text-center text-gray-500 py-6 text-sm">No NFS exports configured.</div>
+        <template x-for="exp in nfsExports" :key="exp.path">
+          <div class="bg-gray-800 border border-gray-700 rounded-lg px-4 py-3 flex items-center justify-between gap-4">
+            <div class="font-mono text-sm">
+              <span class="text-blue-400" x-text="exp.path"></span>
+              <span class="text-gray-400 ml-2" x-text="exp.clients"></span>
+            </div>
+            <button @click="removeNfsExport(exp.path)" :disabled="nfsBusy"
+                    class="text-xs px-2 py-1 rounded bg-red-900/60 hover:bg-red-800/60 text-red-400 transition-colors">Remove</button>
+          </div>
+        </template>
+      </div>
+    </div>
+
+    <!-- SAMBA PANEL -->
+    <div x-show="sharingTab === 'smb'" class="space-y-4">
+      <!-- Add share form -->
+      <div class="bg-gray-800 border border-gray-700 rounded-lg p-4">
+        <div class="text-sm font-semibold text-gray-300 mb-3">Add Samba Share</div>
+        <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-3">
+          <div>
+            <label class="text-xs text-gray-400 block mb-1">Share name</label>
+            <input x-model="smbAddForm.name" placeholder="data"
+                   class="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-sm text-gray-200 focus:outline-none focus:border-blue-400" />
+          </div>
+          <div>
+            <label class="text-xs text-gray-400 block mb-1">Path</label>
+            <select x-model="smbAddForm.path"
+                    class="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-sm text-gray-200">
+              <option value="">— select mount point —</option>
+              <template x-for="vg in (volumes.vgs || []).filter(v => (fsData[v.vg_name]||{}).mounted)" :key="vg.vg_name">
+                <option :value="'/mnt/traid/' + vg.vg_name" x-text="'/mnt/traid/' + vg.vg_name"></option>
+              </template>
+            </select>
+          </div>
+          <div>
+            <label class="text-xs text-gray-400 block mb-1">Comment</label>
+            <input x-model="smbAddForm.comment" placeholder="TRAID volume"
+                   class="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-sm text-gray-200 focus:outline-none focus:border-blue-400" />
+          </div>
+          <div class="flex items-end gap-4 pb-1">
+            <label class="flex items-center gap-1.5 text-xs text-gray-300 cursor-pointer">
+              <input type="checkbox" x-model="smbAddForm.writable" class="accent-blue-500" />
+              Writable
+            </label>
+            <label class="flex items-center gap-1.5 text-xs text-gray-300 cursor-pointer">
+              <input type="checkbox" x-model="smbAddForm.public" class="accent-blue-500" />
+              Guest OK
+            </label>
+          </div>
+        </div>
+        <button @click="addSmbShare()" :disabled="smbBusy || !smbAddForm.name || !smbAddForm.path"
+                class="px-4 py-2 rounded text-sm bg-blue-700 hover:bg-blue-600 text-white transition-colors disabled:opacity-40">
+          Add Share
+        </button>
+      </div>
+      <!-- Share list -->
+      <div class="space-y-2">
+        <div x-show="smbShares.length === 0" class="text-center text-gray-500 py-6 text-sm">No Samba shares configured.</div>
+        <template x-for="share in smbShares" :key="share.name">
+          <div class="bg-gray-800 border border-gray-700 rounded-lg px-4 py-3 flex items-center justify-between gap-4">
+            <div>
+              <div class="flex items-center gap-2">
+                <span class="font-mono text-sm text-blue-400" x-text="share.name"></span>
+                <span x-show="share.public" class="text-xs px-1.5 py-0.5 rounded bg-yellow-800/40 text-yellow-400 border border-yellow-700/40">guest</span>
+                <span x-show="share.writable" class="text-xs px-1.5 py-0.5 rounded bg-green-800/40 text-green-400 border border-green-700/40">rw</span>
+              </div>
+              <div class="text-xs text-gray-500 mt-0.5">
+                <span class="font-mono" x-text="share.path"></span>
+                <span x-show="share.comment" class="ml-2" x-text="share.comment"></span>
+              </div>
+            </div>
+            <button @click="removeSmbShare(share.name)" :disabled="smbBusy"
+                    class="text-xs px-2 py-1 rounded bg-red-900/60 hover:bg-red-800/60 text-red-400 transition-colors">Remove</button>
+          </div>
+        </template>
+      </div>
+    </div>
+  </div><!-- end sharing tab -->
+
+</main>
+
 <!-- =========================================================
      TASK MONITOR PANEL (slide-in from right)
 ========================================================= -->
@@ -1340,7 +1872,10 @@ function traidApp() {
     newSnapDest: '',
     newSnapReadonly: true,
     balanceUsageFilter: 50,
-    scrubStatus: {},     // vg_name → scrub status text
+    scrubStatus: {},     // vg_name → scrub status text (raw)
+    scrubParsed: {},     // vg_name → parsed scrub status object
+    scrubRunning: {},    // vg_name → bool (scrub currently running/paused)
+    scrubLastResult: {}, // vg_name → last persisted scrub result
     balanceStatus: {},   // vg_name → balance status text
     formatModal: null,   // vg_name of open format modal
     formatFstype: 'ext4',
@@ -1383,6 +1918,45 @@ function traidApp() {
     activeModal: null,
     mo: {},
     modalBusy: false,
+
+    // Top-level tab
+    activeTab: 'storage',
+
+    // VMs
+    vms: [],
+    vmBusy: {},
+    vmCreateForm: { name: '', iso: '', ram_mb: 2048, vcpus: 2, disk_gb: 20 },
+    vmCreateBusy: false,
+    vmIsos: [],
+
+    // Containers / Docker
+    containers: [],
+    containersBusy: {},
+    dockerImages: [],
+    dockerLogsModal: null,
+    dockerLogs: '',
+    dockerLogsBusy: false,
+    pullImageName: '',
+    pullBusy: false,
+
+    // Backup Jobs
+    backupJobs: [],
+    backupJobsBusy: {},
+    backupCreateForm: { name: '', source_vg: '', dest_protocol: 'rsync_local',
+                        dest_path: '', dest_host: '', dest_cifs_user: '',
+                        dest_cifs_pass: '', interval_hours: 24 },
+    backupCreateBusy: false,
+    backupHistoryModal: null,
+    backupHistory: [],
+
+    // Sharing
+    sharingTab: 'nfs',
+    nfsExports: [],
+    nfsBusy: false,
+    nfsAddForm: { path: '', clients: '', options: 'rw,sync,no_subtree_check' },
+    smbShares: [],
+    smbBusy: false,
+    smbAddForm: { name: '', path: '', comment: '', public: false, writable: true },
 
     // Computed
     get availableDisks() {
@@ -1603,6 +2177,34 @@ function traidApp() {
         if (res.ok) {
           const d = await res.json()
           this.scrubStatus = { ...this.scrubStatus, [vgName]: d.status || '' }
+          const parsed = d.parsed || {}
+          this.scrubParsed = { ...this.scrubParsed, [vgName]: parsed }
+          const st = (parsed.status || '').toLowerCase()
+          this.scrubRunning = { ...this.scrubRunning, [vgName]: st === 'running' || st === 'paused' }
+        }
+      } catch (_) {}
+    },
+
+    async btrfsScrubPause(vgName) {
+      try {
+        await fetch(`/api/volumes/${encodeURIComponent(vgName)}/btrfs/scrub/pause`, { method: 'POST' })
+        await this.btrfsScrubStatus(vgName)
+      } catch (_) {}
+    },
+
+    async btrfsScrubResume(vgName) {
+      try {
+        await fetch(`/api/volumes/${encodeURIComponent(vgName)}/btrfs/scrub/resume`, { method: 'POST' })
+        await this.btrfsScrubStatus(vgName)
+      } catch (_) {}
+    },
+
+    async loadScrubLastResult(vgName) {
+      try {
+        const res = await fetch(`/api/volumes/${encodeURIComponent(vgName)}/btrfs/scrub/last`)
+        if (res.ok) {
+          const d = await res.json()
+          this.scrubLastResult = { ...this.scrubLastResult, [vgName]: d }
         }
       } catch (_) {}
     },
@@ -2009,6 +2611,374 @@ function traidApp() {
         this.errorMsg = 'Operation failed: ' + e.message
       } finally {
         this.modalBusy = false
+      }
+    },
+
+    // -----------------------------------------------------------------------
+    // VMs
+    // -----------------------------------------------------------------------
+
+    async loadVms() {
+      try {
+        const res = await fetch('/api/vms')
+        if (res.ok) this.vms = await res.json()
+      } catch (_) {}
+    },
+
+    async loadVmIsos() {
+      try {
+        const res = await fetch('/api/vms/isos')
+        if (res.ok) this.vmIsos = await res.json()
+      } catch (_) {}
+    },
+
+    async vmDoAction(name, action) {
+      this.vmBusy = { ...this.vmBusy, [name]: action }
+      try {
+        const res = await fetch(`/api/vms/${encodeURIComponent(name)}/action`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action }),
+        })
+        if (!res.ok) {
+          const err = await res.json()
+          throw new Error(err.detail?.message || err.detail || `HTTP ${res.status}`)
+        }
+        await this.loadVms()
+      } catch (e) {
+        this.errorMsg = `VM ${action} failed: ` + e.message
+      } finally {
+        const b = { ...this.vmBusy }
+        delete b[name]
+        this.vmBusy = b
+      }
+    },
+
+    async createVm() {
+      this.vmCreateBusy = true
+      try {
+        const res = await fetch('/api/vms', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(this.vmCreateForm),
+        })
+        if (!res.ok) {
+          const err = await res.json()
+          throw new Error(err.detail?.message || err.detail || `HTTP ${res.status}`)
+        }
+        this.vmCreateForm = { name: '', iso: '', ram_mb: 2048, vcpus: 2, disk_gb: 20 }
+        this.showMonitor = true
+        await this.loadJobs()
+        await this.loadVms()
+      } catch (e) {
+        this.errorMsg = 'Create VM failed: ' + e.message
+      } finally {
+        this.vmCreateBusy = false
+      }
+    },
+
+    async deleteVm(name) {
+      if (!confirm(`Delete VM "${name}"? This will remove the VM definition. Storage will be removed too.`)) return
+      this.vmBusy = { ...this.vmBusy, [name]: 'delete' }
+      try {
+        const res = await fetch(`/api/vms/${encodeURIComponent(name)}?keep_storage=false`, {
+          method: 'DELETE',
+        })
+        if (!res.ok) {
+          const err = await res.json()
+          throw new Error(err.detail?.message || err.detail || `HTTP ${res.status}`)
+        }
+        await this.loadVms()
+      } catch (e) {
+        this.errorMsg = 'Delete VM failed: ' + e.message
+      } finally {
+        const b = { ...this.vmBusy }
+        delete b[name]
+        this.vmBusy = b
+      }
+    },
+
+    // -----------------------------------------------------------------------
+    // Containers / Docker
+    // -----------------------------------------------------------------------
+
+    async loadContainers() {
+      try {
+        const res = await fetch('/api/containers?all=true')
+        if (res.ok) this.containers = await res.json()
+      } catch (_) {}
+    },
+
+    async loadDockerImages() {
+      try {
+        const res = await fetch('/api/images')
+        if (res.ok) this.dockerImages = await res.json()
+      } catch (_) {}
+    },
+
+    async containerAction(id, action) {
+      this.containersBusy = { ...this.containersBusy, [id]: action }
+      try {
+        const res = await fetch(`/api/containers/${id}/action`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action }),
+        })
+        if (!res.ok) {
+          const err = await res.json()
+          throw new Error(err.detail?.message || err.detail || `HTTP ${res.status}`)
+        }
+        await this.loadContainers()
+      } catch (e) {
+        this.errorMsg = `Container ${action} failed: ` + e.message
+      } finally {
+        const b = { ...this.containersBusy }
+        delete b[id]
+        this.containersBusy = b
+      }
+    },
+
+    async openDockerLogs(id, name) {
+      this.dockerLogsModal = { id, name }
+      this.dockerLogs = ''
+      this.dockerLogsBusy = true
+      try {
+        const res = await fetch(`/api/containers/${id}/logs?lines=200`)
+        if (!res.ok) throw new Error(`HTTP ${res.status}`)
+        const data = await res.json()
+        this.dockerLogs = data.logs || ''
+      } catch (e) {
+        this.dockerLogs = 'Error loading logs: ' + e.message
+      } finally {
+        this.dockerLogsBusy = false
+      }
+    },
+
+    async pullDockerImage() {
+      if (!this.pullImageName.trim()) return
+      this.pullBusy = true
+      try {
+        const res = await fetch('/api/images/pull', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ image: this.pullImageName.trim() }),
+        })
+        if (!res.ok) {
+          const err = await res.json()
+          throw new Error(err.detail?.message || err.detail || `HTTP ${res.status}`)
+        }
+        this.pullImageName = ''
+        this.showMonitor = true
+        await this.loadJobs()
+      } catch (e) {
+        this.errorMsg = 'Pull image failed: ' + e.message
+      } finally {
+        this.pullBusy = false
+      }
+    },
+
+    async removeDockerImage(id) {
+      if (!confirm('Remove this image?')) return
+      try {
+        const res = await fetch(`/api/images/${id}`, { method: 'DELETE' })
+        if (!res.ok) {
+          const err = await res.json()
+          throw new Error(err.detail?.message || err.detail || `HTTP ${res.status}`)
+        }
+        await this.loadDockerImages()
+      } catch (e) {
+        this.errorMsg = 'Remove image failed: ' + e.message
+      }
+    },
+
+    async dockerPrune() {
+      if (!confirm('Run docker system prune? This removes all stopped containers, unused images, and unused networks.')) return
+      try {
+        const res = await fetch('/api/docker/prune', { method: 'POST' })
+        if (!res.ok) {
+          const err = await res.json()
+          throw new Error(err.detail?.message || err.detail || `HTTP ${res.status}`)
+        }
+        this.showMonitor = true
+        await this.loadJobs()
+        await this.loadContainers()
+        await this.loadDockerImages()
+      } catch (e) {
+        this.errorMsg = 'Prune failed: ' + e.message
+      }
+    },
+
+    // -----------------------------------------------------------------------
+    // Backup Jobs
+    // -----------------------------------------------------------------------
+
+    async loadBackupJobs() {
+      try {
+        const res = await fetch('/api/backup/jobs')
+        if (res.ok) this.backupJobs = await res.json()
+      } catch (_) {}
+    },
+
+    async createBackupJob() {
+      this.backupCreateBusy = true
+      try {
+        const res = await fetch('/api/backup/jobs', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(this.backupCreateForm),
+        })
+        if (!res.ok) {
+          const err = await res.json()
+          throw new Error(err.detail?.message || err.detail || `HTTP ${res.status}`)
+        }
+        this.backupCreateForm = { name: '', source_vg: '', dest_protocol: 'rsync_local',
+                                   dest_path: '', dest_host: '', dest_cifs_user: '',
+                                   dest_cifs_pass: '', interval_hours: 24 }
+        await this.loadBackupJobs()
+      } catch (e) {
+        this.errorMsg = 'Create backup job failed: ' + e.message
+      } finally {
+        this.backupCreateBusy = false
+      }
+    },
+
+    async deleteBackupJob(id) {
+      if (!confirm('Delete this backup job?')) return
+      try {
+        const res = await fetch(`/api/backup/jobs/${id}`, { method: 'DELETE' })
+        if (!res.ok) {
+          const err = await res.json()
+          throw new Error(err.detail?.message || err.detail || `HTTP ${res.status}`)
+        }
+        await this.loadBackupJobs()
+      } catch (e) {
+        this.errorMsg = 'Delete backup job failed: ' + e.message
+      }
+    },
+
+    async runBackupNow(id) {
+      this.backupJobsBusy = { ...this.backupJobsBusy, [id]: true }
+      try {
+        const res = await fetch(`/api/backup/jobs/${id}/run`, { method: 'POST' })
+        if (!res.ok) {
+          const err = await res.json()
+          throw new Error(err.detail?.message || err.detail || `HTTP ${res.status}`)
+        }
+        this.showMonitor = true
+        await this.loadJobs()
+      } catch (e) {
+        this.errorMsg = 'Run backup failed: ' + e.message
+      } finally {
+        const b = { ...this.backupJobsBusy }
+        delete b[id]
+        this.backupJobsBusy = b
+      }
+    },
+
+    async openBackupHistory(id, name) {
+      this.backupHistoryModal = { id, name }
+      this.backupHistory = []
+      try {
+        const res = await fetch(`/api/backup/jobs/${id}/history`)
+        if (res.ok) this.backupHistory = await res.json()
+      } catch (_) {}
+    },
+
+    // -----------------------------------------------------------------------
+    // Sharing — NFS
+    // -----------------------------------------------------------------------
+
+    async loadNfsExports() {
+      try {
+        const res = await fetch('/api/sharing/nfs')
+        if (res.ok) this.nfsExports = await res.json()
+      } catch (_) {}
+    },
+
+    async addNfsExport() {
+      this.nfsBusy = true
+      try {
+        const res = await fetch('/api/sharing/nfs', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(this.nfsAddForm),
+        })
+        if (!res.ok) {
+          const err = await res.json()
+          throw new Error(err.detail?.message || err.detail || `HTTP ${res.status}`)
+        }
+        this.nfsAddForm = { path: '', clients: '', options: 'rw,sync,no_subtree_check' }
+        await this.loadNfsExports()
+      } catch (e) {
+        this.errorMsg = 'Add NFS export failed: ' + e.message
+      } finally {
+        this.nfsBusy = false
+      }
+    },
+
+    async removeNfsExport(path) {
+      if (!confirm(`Remove NFS export for "${path}"?`)) return
+      try {
+        const res = await fetch('/api/sharing/nfs', {
+          method: 'DELETE',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ path }),
+        })
+        if (!res.ok) {
+          const err = await res.json()
+          throw new Error(err.detail?.message || err.detail || `HTTP ${res.status}`)
+        }
+        await this.loadNfsExports()
+      } catch (e) {
+        this.errorMsg = 'Remove NFS export failed: ' + e.message
+      }
+    },
+
+    // -----------------------------------------------------------------------
+    // Sharing — Samba
+    // -----------------------------------------------------------------------
+
+    async loadSmbShares() {
+      try {
+        const res = await fetch('/api/sharing/smb')
+        if (res.ok) this.smbShares = await res.json()
+      } catch (_) {}
+    },
+
+    async addSmbShare() {
+      this.smbBusy = true
+      try {
+        const res = await fetch('/api/sharing/smb', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(this.smbAddForm),
+        })
+        if (!res.ok) {
+          const err = await res.json()
+          throw new Error(err.detail?.message || err.detail || `HTTP ${res.status}`)
+        }
+        this.smbAddForm = { name: '', path: '', comment: '', public: false, writable: true }
+        await this.loadSmbShares()
+      } catch (e) {
+        this.errorMsg = 'Add SMB share failed: ' + e.message
+      } finally {
+        this.smbBusy = false
+      }
+    },
+
+    async removeSmbShare(name) {
+      if (!confirm(`Remove Samba share "${name}"?`)) return
+      try {
+        const res = await fetch(`/api/sharing/smb/${encodeURIComponent(name)}`, {
+          method: 'DELETE',
+        })
+        if (!res.ok) {
+          const err = await res.json()
+          throw new Error(err.detail?.message || err.detail || `HTTP ${res.status}`)
+        }
+        await this.loadSmbShares()
+      } catch (e) {
+        this.errorMsg = 'Remove SMB share failed: ' + e.message
       }
     },
   }

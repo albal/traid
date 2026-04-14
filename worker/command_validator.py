@@ -9,6 +9,28 @@ asyncio.create_subprocess_exec, so no shell interpolation is possible.
 import re
 from typing import Any
 
+# VM name: alphanumeric + . _ + -  (libvirt convention)
+_VM_NAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_.+-]{0,63}$")
+# ISO filename: no path separators
+_ISO_FILENAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_.@-]{0,200}\.iso$")
+# Docker container/image IDs: hex, up to 64 chars
+_DOCKER_ID_RE = re.compile(r"^[a-f0-9A-F]{1,64}$")
+# Docker image name:tag — e.g. ubuntu:22.04, ghcr.io/user/repo:latest
+_DOCKER_IMAGE_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_./@:-]{1,254}$")
+# Backup job ID — same UUID pattern as _JOB_ID_RE (defined later)
+# NFS/local path — must be absolute, under /srv/traid/ or /mnt/traid/ or /var/lib/traid/
+_SHARE_PATH_RE = re.compile(
+    r"^/(?:srv/traid|mnt/traid|var/lib/traid)(?!.*\.\.)[/a-zA-Z0-9_.@-]{0,255}$"
+)
+# Local backup destination: any absolute path (less strict — admin-controlled)
+_LOCAL_PATH_RE = re.compile(r"^/[a-zA-Z0-9_./@-]{1,511}$")
+# NFS clients string: allow host/network specs + option parentheses
+_NFS_CLIENTS_RE = re.compile(r"^[a-zA-Z0-9.*,/_()\-]{1,200}$")
+# NFS options: alphanumeric + comma + underscore + equals
+_NFS_OPTIONS_RE = re.compile(r"^[a-zA-Z0-9_,=]{0,200}$")
+# Samba share name: simple identifier
+_SAMBA_SHARE_NAME_RE = re.compile(r"^[a-zA-Z0-9_-]{1,50}$")
+
 # Subvolume / snapshot relative paths: no shell metacharacters, no ..
 _SUBVOL_PATH_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_./@-]{0,254}$")
 # Filesystem label
@@ -156,9 +178,12 @@ _ALLOWED_ACTIONS: dict[str, dict] = {
                               "optional": ["readonly"]},
     "btrfs_subvol_set_default": {"required": ["vg_name", "subvol_id"], "optional": []},
     # ---- btrfs maintenance ----
-    "btrfs_scrub_start":    {"required": ["vg_name"], "optional": []},
-    "btrfs_scrub_status":   {"required": ["vg_name"], "optional": []},
-    "btrfs_scrub_cancel":   {"required": ["vg_name"], "optional": []},
+    "btrfs_scrub_start":       {"required": ["vg_name"], "optional": []},
+    "btrfs_scrub_status":      {"required": ["vg_name"], "optional": []},
+    "btrfs_scrub_cancel":      {"required": ["vg_name"], "optional": []},
+    "btrfs_scrub_pause":       {"required": ["vg_name"], "optional": []},
+    "btrfs_scrub_resume":      {"required": ["vg_name"], "optional": []},
+    "btrfs_scrub_last_result": {"required": ["vg_name"], "optional": []},
     "btrfs_balance_start":  {"required": ["vg_name"],
                               "optional": ["usage_filter", "metadata_usage"]},
     "btrfs_balance_status": {"required": ["vg_name"], "optional": []},
@@ -176,6 +201,38 @@ _ALLOWED_ACTIONS: dict[str, dict] = {
     "btrfs_send":           {"required": ["vg_name", "snapshot_path", "dest_file"],
                               "optional": ["parent_path"]},
     "btrfs_receive":        {"required": ["vg_name", "source_file"], "optional": []},
+    # ---- VM management ----
+    "vm_list":              {"required": [], "optional": []},
+    "vm_info":              {"required": ["name"], "optional": []},
+    "vm_action":            {"required": ["name", "action"], "optional": []},
+    "vm_list_isos":         {"required": [], "optional": []},
+    "vm_create":            {"required": ["name", "iso", "ram_mb", "vcpus", "disk_gb"],
+                             "optional": []},
+    "vm_delete":            {"required": ["name"], "optional": ["keep_storage"]},
+    # ---- Docker ----
+    "docker_list_containers":  {"required": [], "optional": ["all"]},
+    "docker_container_action": {"required": ["container_id", "action"], "optional": []},
+    "docker_container_logs":   {"required": ["container_id"], "optional": ["lines"]},
+    "docker_list_images":      {"required": [], "optional": []},
+    "docker_pull_image":       {"required": ["image"], "optional": []},
+    "docker_remove_image":     {"required": ["image_id"], "optional": ["force"]},
+    "docker_system_prune":     {"required": [], "optional": []},
+    # ---- Backup ----
+    "backup_list_jobs":     {"required": [], "optional": []},
+    "backup_create_job":    {"required": ["name", "source_vg", "dest_protocol",
+                                          "dest_path", "interval_hours"],
+                             "optional": ["dest_host", "dest_cifs_user", "dest_cifs_pass"]},
+    "backup_delete_job":    {"required": ["backup_id"], "optional": []},
+    "backup_run_now":       {"required": ["backup_id"], "optional": []},
+    "backup_job_history":   {"required": ["backup_id"], "optional": []},
+    # ---- File sharing (NFS + Samba) ----
+    "nfs_list_exports":     {"required": [], "optional": []},
+    "nfs_add_export":       {"required": ["path", "clients", "options"], "optional": []},
+    "nfs_remove_export":    {"required": ["path"], "optional": []},
+    "samba_list_shares":    {"required": [], "optional": []},
+    "samba_add_share":      {"required": ["name", "path"],
+                             "optional": ["comment", "public", "writable"]},
+    "samba_remove_share":   {"required": ["name"], "optional": []},
 }
 
 
@@ -307,7 +364,9 @@ def validate_request(payload: dict) -> tuple[str, dict]:
 
     elif action in ("fs_mount", "fs_unmount", "fs_info",
                     "btrfs_subvol_list", "btrfs_scrub_start", "btrfs_scrub_status",
-                    "btrfs_scrub_cancel", "btrfs_balance_status", "btrfs_balance_cancel",
+                    "btrfs_scrub_cancel", "btrfs_scrub_pause", "btrfs_scrub_resume",
+                    "btrfs_scrub_last_result",
+                    "btrfs_balance_status", "btrfs_balance_cancel",
                     "btrfs_quota_enable", "btrfs_quota_list", "btrfs_usage_detail"):
         validated["vg_name"] = _validate_vg_name(raw_params["vg_name"], "vg_name")
 
@@ -429,5 +488,176 @@ def validate_request(payload: dict) -> tuple[str, dict]:
         if not isinstance(source_file, str) or not _STREAM_FILE_RE.match(source_file):
             raise ValidationError("source_file: must be a .btrfs filename")
         validated["source_file"] = source_file
+
+    # ---- VM management ----
+    elif action in ("vm_list", "vm_list_isos"):
+        pass  # no params
+
+    elif action in ("vm_info",):
+        name = raw_params["name"]
+        if not isinstance(name, str) or not _VM_NAME_RE.match(name):
+            raise ValidationError("name: invalid VM name")
+        validated["name"] = name
+
+    elif action == "vm_action":
+        name = raw_params["name"]
+        if not isinstance(name, str) or not _VM_NAME_RE.match(name):
+            raise ValidationError("name: invalid VM name")
+        validated["name"] = name
+        vm_action = raw_params["action"]
+        if vm_action not in {"start", "shutdown", "destroy", "suspend", "resume"}:
+            raise ValidationError("action: must be start|shutdown|destroy|suspend|resume")
+        validated["action"] = vm_action
+
+    elif action == "vm_create":
+        name = raw_params["name"]
+        if not isinstance(name, str) or not _VM_NAME_RE.match(name):
+            raise ValidationError("name: invalid VM name")
+        validated["name"] = name
+        iso = raw_params["iso"]
+        if not isinstance(iso, str) or not _ISO_FILENAME_RE.match(iso):
+            raise ValidationError("iso: invalid ISO filename")
+        validated["iso"] = iso
+        for field, lo, hi in (("ram_mb", 64, 65536), ("vcpus", 1, 64), ("disk_gb", 1, 32768)):
+            v = raw_params[field]
+            if not isinstance(v, int) or not (lo <= v <= hi):
+                raise ValidationError(f"{field}: must be int {lo}–{hi}")
+            validated[field] = v
+
+    elif action == "vm_delete":
+        name = raw_params["name"]
+        if not isinstance(name, str) or not _VM_NAME_RE.match(name):
+            raise ValidationError("name: invalid VM name")
+        validated["name"] = name
+        if "keep_storage" in raw_params:
+            validated["keep_storage"] = bool(raw_params["keep_storage"])
+
+    # ---- Docker ----
+    elif action == "docker_list_containers":
+        if "all" in raw_params:
+            validated["all"] = bool(raw_params["all"])
+
+    elif action == "docker_container_action":
+        cid = raw_params["container_id"]
+        if not isinstance(cid, str) or not _DOCKER_ID_RE.match(cid):
+            raise ValidationError("container_id: invalid container ID")
+        validated["container_id"] = cid
+        act = raw_params["action"]
+        if act not in {"start", "stop", "rm"}:
+            raise ValidationError("action: must be start|stop|rm")
+        validated["action"] = act
+
+    elif action == "docker_container_logs":
+        cid = raw_params["container_id"]
+        if not isinstance(cid, str) or not _DOCKER_ID_RE.match(cid):
+            raise ValidationError("container_id: invalid container ID")
+        validated["container_id"] = cid
+        if "lines" in raw_params:
+            lines = raw_params["lines"]
+            if not isinstance(lines, int) or not (1 <= lines <= 10000):
+                raise ValidationError("lines: must be 1–10000")
+            validated["lines"] = lines
+
+    elif action in ("docker_list_images", "docker_system_prune"):
+        pass  # no params
+
+    elif action == "docker_pull_image":
+        image = raw_params["image"]
+        if not isinstance(image, str) or not _DOCKER_IMAGE_RE.match(image):
+            raise ValidationError("image: invalid image name/tag")
+        validated["image"] = image
+
+    elif action == "docker_remove_image":
+        image_id = raw_params["image_id"]
+        if not isinstance(image_id, str) or not _DOCKER_ID_RE.match(image_id):
+            raise ValidationError("image_id: invalid image ID")
+        validated["image_id"] = image_id
+        if "force" in raw_params:
+            validated["force"] = bool(raw_params["force"])
+
+    # ---- Backup ----
+    elif action == "backup_list_jobs":
+        pass
+
+    elif action == "backup_create_job":
+        validated["name"] = _validate_vg_name(raw_params["name"], "name")
+        validated["source_vg"] = _validate_vg_name(raw_params["source_vg"], "source_vg")
+        proto = raw_params["dest_protocol"]
+        if proto not in {"rsync_local", "nfs", "cifs", "btrfs_send"}:
+            raise ValidationError("dest_protocol: must be rsync_local|nfs|cifs|btrfs_send")
+        validated["dest_protocol"] = proto
+        dest_path = raw_params["dest_path"]
+        if proto == "rsync_local" or proto == "btrfs_send":
+            if not isinstance(dest_path, str) or not _LOCAL_PATH_RE.match(dest_path):
+                raise ValidationError("dest_path: invalid local path")
+        else:
+            if not isinstance(dest_path, str) or not _REMOTE_PATH_RE.match(dest_path):
+                raise ValidationError("dest_path: invalid remote path")
+        validated["dest_path"] = dest_path
+        interval = raw_params["interval_hours"]
+        if not isinstance(interval, int) or not (1 <= interval <= 8760):
+            raise ValidationError("interval_hours: must be 1–8760")
+        validated["interval_hours"] = interval
+        for opt_field in ("dest_host", "dest_cifs_user", "dest_cifs_pass"):
+            if opt_field in raw_params:
+                validated[opt_field] = _validate_cred(raw_params[opt_field], opt_field)
+
+    elif action in ("backup_delete_job", "backup_run_now", "backup_job_history"):
+        backup_id = raw_params["backup_id"]
+        if not isinstance(backup_id, str) or not _JOB_ID_RE.match(backup_id):
+            raise ValidationError("backup_id: invalid UUID")
+        validated["backup_id"] = backup_id
+
+    # ---- File sharing ----
+    elif action == "nfs_list_exports":
+        pass
+
+    elif action == "nfs_add_export":
+        path = raw_params["path"]
+        if not isinstance(path, str) or not _SHARE_PATH_RE.match(path):
+            raise ValidationError("path: must be under /srv/traid, /mnt/traid, or /var/lib/traid")
+        validated["path"] = path
+        clients = raw_params["clients"]
+        if not isinstance(clients, str) or not _NFS_CLIENTS_RE.match(clients):
+            raise ValidationError("clients: invalid NFS clients specification")
+        validated["clients"] = clients
+        options = raw_params["options"]
+        if not isinstance(options, str) or not _NFS_OPTIONS_RE.match(options):
+            raise ValidationError("options: invalid NFS options")
+        validated["options"] = options
+
+    elif action == "nfs_remove_export":
+        path = raw_params["path"]
+        if not isinstance(path, str) or not _SHARE_PATH_RE.match(path):
+            raise ValidationError("path: invalid export path")
+        validated["path"] = path
+
+    elif action == "samba_list_shares":
+        pass
+
+    elif action == "samba_add_share":
+        name = raw_params["name"]
+        if not isinstance(name, str) or not _SAMBA_SHARE_NAME_RE.match(name):
+            raise ValidationError("name: invalid Samba share name")
+        validated["name"] = name
+        path = raw_params["path"]
+        if not isinstance(path, str) or not _SHARE_PATH_RE.match(path):
+            raise ValidationError("path: must be under /srv/traid, /mnt/traid, or /var/lib/traid")
+        validated["path"] = path
+        if "comment" in raw_params:
+            comment = raw_params["comment"]
+            if not isinstance(comment, str) or len(comment) > 200:
+                raise ValidationError("comment: too long or invalid")
+            validated["comment"] = comment
+        if "public" in raw_params:
+            validated["public"] = bool(raw_params["public"])
+        if "writable" in raw_params:
+            validated["writable"] = bool(raw_params["writable"])
+
+    elif action == "samba_remove_share":
+        name = raw_params["name"]
+        if not isinstance(name, str) or not _SAMBA_SHARE_NAME_RE.match(name):
+            raise ValidationError("name: invalid Samba share name")
+        validated["name"] = name
 
     return action, validated

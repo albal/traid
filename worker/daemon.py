@@ -27,6 +27,10 @@ from shared.protocol import send_message, recv_message, ProtocolError
 from worker.command_validator import validate_request, ValidationError
 from worker import disk_ops
 from worker import fs_ops
+from worker import vm_ops
+from worker import docker_ops
+from worker import backup_scheduler
+from worker import sharing_ops
 from worker.mdstat_reader import MdstatReader
 from worker.traid_algorithm import calculate_traid
 from worker.traid_algorithm import (
@@ -573,6 +577,18 @@ async def _handle_btrfs_scrub_cancel(params: dict) -> dict:
     return await fs_ops.btrfs_scrub_cancel(params["vg_name"])
 
 
+async def _handle_btrfs_scrub_pause(params: dict) -> dict:
+    return await fs_ops.btrfs_scrub_pause(params["vg_name"])
+
+
+async def _handle_btrfs_scrub_resume(params: dict) -> dict:
+    return await fs_ops.btrfs_scrub_resume(params["vg_name"])
+
+
+async def _handle_btrfs_scrub_last_result(params: dict) -> dict:
+    return await fs_ops.btrfs_scrub_last_result(params["vg_name"])
+
+
 async def _handle_btrfs_balance_start(params: dict) -> dict:
     vg_name = params["vg_name"]
     job_id = _new_job("btrfs_balance", vg_name=vg_name, type="btrfs_balance")
@@ -674,6 +690,163 @@ async def _handle_btrfs_receive(params: dict) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Handlers: VM management
+# ---------------------------------------------------------------------------
+
+async def _handle_vm_list(_params: dict) -> dict:
+    return {"vms": await vm_ops.list_vms()}
+
+
+async def _handle_vm_info(params: dict) -> dict:
+    return await vm_ops.vm_info(params["name"])
+
+
+async def _handle_vm_action(params: dict) -> dict:
+    return await vm_ops.vm_action(params["name"], params["action"])
+
+
+async def _handle_vm_list_isos(_params: dict) -> dict:
+    return {"isos": await vm_ops.list_isos()}
+
+
+async def _handle_vm_create(params: dict) -> dict:
+    name = params["name"]
+    job_id = _new_job("vm_create", type="vm_create", vg_name=None)
+    coro = vm_ops.create_vm(
+        name, params["iso"], params["ram_mb"],
+        params["vcpus"], params["disk_gb"],
+        update_fn=_make_updater(job_id),
+    )
+    _launch_free(job_id, coro)
+    return {"accepted": True, "job_id": job_id}
+
+
+async def _handle_vm_delete(params: dict) -> dict:
+    return await vm_ops.vm_delete(
+        params["name"], keep_storage=params.get("keep_storage", False)
+    )
+
+
+# ---------------------------------------------------------------------------
+# Handlers: Docker
+# ---------------------------------------------------------------------------
+
+async def _handle_docker_list_containers(params: dict) -> dict:
+    containers = await docker_ops.list_containers(
+        all_containers=params.get("all", True)
+    )
+    return {"containers": containers}
+
+
+async def _handle_docker_container_action(params: dict) -> dict:
+    return await docker_ops.container_action(params["container_id"], params["action"])
+
+
+async def _handle_docker_container_logs(params: dict) -> dict:
+    return await docker_ops.container_logs(
+        params["container_id"], lines=params.get("lines", 200)
+    )
+
+
+async def _handle_docker_list_images(_params: dict) -> dict:
+    return {"images": await docker_ops.list_images()}
+
+
+async def _handle_docker_pull_image(params: dict) -> dict:
+    image = params["image"]
+    job_id = _new_job("docker_pull", type="docker_pull")
+    _launch_free(job_id, docker_ops.pull_image(image, _make_updater(job_id)))
+    return {"accepted": True, "job_id": job_id}
+
+
+async def _handle_docker_remove_image(params: dict) -> dict:
+    return await docker_ops.remove_image(
+        params["image_id"], force=params.get("force", False)
+    )
+
+
+async def _handle_docker_system_prune(_params: dict) -> dict:
+    job_id = _new_job("docker_prune", type="docker_prune")
+    _launch_free(job_id, docker_ops.system_prune(_make_updater(job_id)))
+    return {"accepted": True, "job_id": job_id}
+
+
+# ---------------------------------------------------------------------------
+# Handlers: Backup
+# ---------------------------------------------------------------------------
+
+async def _handle_backup_list_jobs(_params: dict) -> dict:
+    return {"jobs": backup_scheduler.list_jobs()}
+
+
+async def _handle_backup_create_job(params: dict) -> dict:
+    record = backup_scheduler.create_job(
+        name=params["name"],
+        source_vg=params["source_vg"],
+        dest_protocol=params["dest_protocol"],
+        dest_path=params["dest_path"],
+        interval_hours=params["interval_hours"],
+        dest_host=params.get("dest_host", ""),
+        dest_cifs_user=params.get("dest_cifs_user", ""),
+        dest_cifs_pass=params.get("dest_cifs_pass", ""),
+    )
+    return record
+
+
+async def _handle_backup_delete_job(params: dict) -> dict:
+    return backup_scheduler.delete_job(params["backup_id"])
+
+
+async def _handle_backup_run_now(params: dict) -> dict:
+    backup_id = params["backup_id"]
+    job_id = _new_job(
+        "backup_run", type="backup_run",
+        vg_name=None, backup_id=backup_id,
+    )
+    _launch_free(job_id, backup_scheduler.run_backup(backup_id, _make_updater(job_id)))
+    return {"accepted": True, "job_id": job_id}
+
+
+async def _handle_backup_job_history(params: dict) -> dict:
+    return {"history": backup_scheduler.get_history(params["backup_id"])}
+
+
+# ---------------------------------------------------------------------------
+# Handlers: File sharing
+# ---------------------------------------------------------------------------
+
+async def _handle_nfs_list_exports(_params: dict) -> dict:
+    return {"exports": await sharing_ops.nfs_list_exports()}
+
+
+async def _handle_nfs_add_export(params: dict) -> dict:
+    return await sharing_ops.nfs_add_export(
+        params["path"], params["clients"], params["options"]
+    )
+
+
+async def _handle_nfs_remove_export(params: dict) -> dict:
+    return await sharing_ops.nfs_remove_export(params["path"])
+
+
+async def _handle_samba_list_shares(_params: dict) -> dict:
+    return {"shares": await sharing_ops.samba_list_shares()}
+
+
+async def _handle_samba_add_share(params: dict) -> dict:
+    return await sharing_ops.samba_add_share(
+        params["name"], params["path"],
+        comment=params.get("comment", ""),
+        public=params.get("public", False),
+        writable=params.get("writable", True),
+    )
+
+
+async def _handle_samba_remove_share(params: dict) -> dict:
+    return await sharing_ops.samba_remove_share(params["name"])
+
+
+# ---------------------------------------------------------------------------
 # Dispatcher
 # ---------------------------------------------------------------------------
 
@@ -709,9 +882,12 @@ _HANDLERS = {
     "btrfs_snapshot_create":  _handle_btrfs_snapshot_create,
     "btrfs_subvol_set_default": _handle_btrfs_subvol_set_default,
     # btrfs maintenance
-    "btrfs_scrub_start":      _handle_btrfs_scrub_start,
-    "btrfs_scrub_status":     _handle_btrfs_scrub_status,
-    "btrfs_scrub_cancel":     _handle_btrfs_scrub_cancel,
+    "btrfs_scrub_start":         _handle_btrfs_scrub_start,
+    "btrfs_scrub_status":        _handle_btrfs_scrub_status,
+    "btrfs_scrub_cancel":        _handle_btrfs_scrub_cancel,
+    "btrfs_scrub_pause":         _handle_btrfs_scrub_pause,
+    "btrfs_scrub_resume":        _handle_btrfs_scrub_resume,
+    "btrfs_scrub_last_result":   _handle_btrfs_scrub_last_result,
     "btrfs_balance_start":    _handle_btrfs_balance_start,
     "btrfs_balance_status":   _handle_btrfs_balance_status,
     "btrfs_balance_cancel":   _handle_btrfs_balance_cancel,
@@ -726,6 +902,34 @@ _HANDLERS = {
     # btrfs send / receive
     "btrfs_send":             _handle_btrfs_send,
     "btrfs_receive":          _handle_btrfs_receive,
+    # VM management
+    "vm_list":                _handle_vm_list,
+    "vm_info":                _handle_vm_info,
+    "vm_action":              _handle_vm_action,
+    "vm_list_isos":           _handle_vm_list_isos,
+    "vm_create":              _handle_vm_create,
+    "vm_delete":              _handle_vm_delete,
+    # Docker
+    "docker_list_containers": _handle_docker_list_containers,
+    "docker_container_action":_handle_docker_container_action,
+    "docker_container_logs":  _handle_docker_container_logs,
+    "docker_list_images":     _handle_docker_list_images,
+    "docker_pull_image":      _handle_docker_pull_image,
+    "docker_remove_image":    _handle_docker_remove_image,
+    "docker_system_prune":    _handle_docker_system_prune,
+    # Backup
+    "backup_list_jobs":       _handle_backup_list_jobs,
+    "backup_create_job":      _handle_backup_create_job,
+    "backup_delete_job":      _handle_backup_delete_job,
+    "backup_run_now":         _handle_backup_run_now,
+    "backup_job_history":     _handle_backup_job_history,
+    # File sharing
+    "nfs_list_exports":       _handle_nfs_list_exports,
+    "nfs_add_export":         _handle_nfs_add_export,
+    "nfs_remove_export":      _handle_nfs_remove_export,
+    "samba_list_shares":      _handle_samba_list_shares,
+    "samba_add_share":        _handle_samba_add_share,
+    "samba_remove_share":     _handle_samba_remove_share,
 }
 
 
@@ -804,6 +1008,16 @@ async def main() -> None:
     REPORT_DIR.mkdir(parents=True, exist_ok=True)
 
     await fs_ops.remount_all()
+
+    # Wire backup scheduler into the job system
+    backup_scheduler.init_scheduler(
+        launch_free=_launch_free,
+        active_jobs=_active_jobs,
+        job_history=_job_history,
+        new_job=_new_job,
+        make_updater=_make_updater,
+    )
+    asyncio.create_task(backup_scheduler.tick_scheduler(), name="backup-scheduler")
 
     server = await asyncio.start_unix_server(_handle_client, path=str(SOCKET_PATH))
 
