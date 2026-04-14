@@ -474,23 +474,40 @@
       </div>
       <div x-show="mo.direction === 'traid1_to_traid2'">
         <label class="text-xs text-gray-400 block mb-1">New disk to add (optional)</label>
-        <input x-model="mo.new_disk" placeholder="/dev/sdb"
-               class="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-sm text-gray-200 focus:outline-none focus:border-blue-400" />
-        <div class="text-xs text-gray-600 mt-1">Leave blank if TRAID-2 can use existing spares.</div>
+        <select x-model="mo.new_disk"
+                class="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-sm text-gray-200">
+          <option value="">— None / use existing spares —</option>
+          <template x-for="d in availableDisks" :key="d.name">
+            <option :value="d.name" x-text="`${d.name}  (${humanSize(d.size)})`"></option>
+          </template>
+        </select>
+        <div x-show="availableDisks.length === 0" class="text-xs text-yellow-500 mt-1">No available disks detected.</div>
       </div>
     </div>
 
     <!-- Replace fields -->
     <div x-show="activeModal === 'replace'" class="space-y-3 mb-5">
       <div>
-        <label class="text-xs text-gray-400 block mb-1">Old disk (to remove)</label>
-        <input x-model="mo.old_disk" placeholder="/dev/sdb"
-               class="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-sm text-gray-200 focus:outline-none focus:border-blue-400" />
+        <label class="text-xs text-gray-400 block mb-1">Disk to replace (current member)</label>
+        <select x-model="mo.old_disk"
+                class="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-sm text-gray-200">
+          <option value="">— Select disk to replace —</option>
+          <template x-for="d in vgDisks" :key="d">
+            <option :value="d" x-text="d"></option>
+          </template>
+        </select>
+        <div x-show="vgDisks.length === 0" class="text-xs text-yellow-500 mt-1">No member disks found for this volume.</div>
       </div>
       <div>
-        <label class="text-xs text-gray-400 block mb-1">New disk (replacement)</label>
-        <input x-model="mo.new_disk" placeholder="/dev/sdc"
-               class="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-sm text-gray-200 focus:outline-none focus:border-blue-400" />
+        <label class="text-xs text-gray-400 block mb-1">Replacement disk (new)</label>
+        <select x-model="mo.new_disk"
+                class="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-sm text-gray-200">
+          <option value="">— Select replacement disk —</option>
+          <template x-for="d in availableDisks" :key="d.name">
+            <option :value="d.name" x-text="`${d.name}  (${humanSize(d.size)})`"></option>
+          </template>
+        </select>
+        <div x-show="availableDisks.length === 0" class="text-xs text-yellow-500 mt-1">No available disks detected.</div>
       </div>
     </div>
 
@@ -498,8 +515,14 @@
     <div x-show="activeModal === 'grow'" class="space-y-3 mb-5">
       <div>
         <label class="text-xs text-gray-400 block mb-1">New disk to add</label>
-        <input x-model="mo.new_disk" placeholder="/dev/sdb"
-               class="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-sm text-gray-200 focus:outline-none focus:border-blue-400" />
+        <select x-model="mo.new_disk"
+                class="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-sm text-gray-200">
+          <option value="">— Select a disk —</option>
+          <template x-for="d in availableDisks" :key="d.name">
+            <option :value="d.name" x-text="`${d.name}  (${humanSize(d.size)})`"></option>
+          </template>
+        </select>
+        <div x-show="availableDisks.length === 0" class="text-xs text-yellow-500 mt-1">No available disks detected.</div>
       </div>
     </div>
 
@@ -507,9 +530,15 @@
     <div x-show="activeModal === 'shrink'" class="space-y-3 mb-5">
       <div>
         <label class="text-xs text-gray-400 block mb-1">Disk to remove</label>
-        <input x-model="mo.disk_to_remove" placeholder="/dev/sdb"
-               class="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-sm text-gray-200 focus:outline-none focus:border-blue-400" />
-        <div class="text-xs text-gray-600 mt-1">The disk will be removed from all arrays and wiped.</div>
+        <select x-model="mo.disk_to_remove"
+                class="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-sm text-gray-200">
+          <option value="">— Select disk to remove —</option>
+          <template x-for="d in vgDisks" :key="d">
+            <option :value="d" x-text="d"></option>
+          </template>
+        </select>
+        <div x-show="vgDisks.length === 0" class="text-xs text-yellow-500 mt-1">No member disks found for this volume.</div>
+        <div class="text-xs text-yellow-600 mt-1">The disk will be removed from all arrays and wiped.</div>
       </div>
     </div>
 
@@ -517,8 +546,14 @@
     <div x-show="activeModal === 'clone'" class="space-y-3 mb-5">
       <div>
         <label class="text-xs text-gray-400 block mb-1">Target disk (must be ≥ volume size)</label>
-        <input x-model="mo.target_disk" placeholder="/dev/sdb"
-               class="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-sm text-gray-200 focus:outline-none focus:border-blue-400" />
+        <select x-model="mo.target_disk"
+                class="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-sm text-gray-200">
+          <option value="">— Select target disk —</option>
+          <template x-for="d in availableDisks" :key="d.name">
+            <option :value="d.name" x-text="`${d.name}  (${humanSize(d.size)})`"></option>
+          </template>
+        </select>
+        <div x-show="availableDisks.length === 0" class="text-xs text-yellow-500 mt-1">No available disks detected.</div>
         <div class="text-xs text-yellow-600 mt-1">This will overwrite all data on the target disk.</div>
       </div>
     </div>
@@ -817,6 +852,10 @@ function traidApp() {
     // Computed
     get availableDisks() {
       return this.allDisks.filter(d => d.available)
+    },
+    get vgDisks() {
+      const vg = (this.volumes?.vgs || []).find(v => v.vg_name === this.mo.vg_name)
+      return vg ? (vg.disks || []) : []
     },
     get syncingArrays() {
       return this.allArrays.filter(a => a.sync_pct !== null)

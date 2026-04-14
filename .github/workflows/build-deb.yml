@@ -9,7 +9,33 @@ on:
   workflow_dispatch:
 
 jobs:
+  test:
+    runs-on: ubuntu-latest
+    container:
+      image: debian:trixie
+
+    steps:
+      - name: Install test dependencies
+        run: |
+          apt-get update -qq
+          apt-get install -y --no-install-recommends \
+            python3.13 python3.13-venv python3-pip git ca-certificates
+
+      - uses: actions/checkout@v6
+
+      - name: Create virtualenv and install packages
+        run: |
+          python3.13 -m venv venv
+          venv/bin/pip install --quiet \
+            fastapi uvicorn[standard] pydantic python-json-logger \
+            pytest pytest-asyncio httpx
+
+      - name: Run tests
+        run: |
+          venv/bin/python -m pytest tests/ -v --tb=short
+
   build:
+    needs: test
     runs-on: ubuntu-latest
     container:
       image: debian:trixie

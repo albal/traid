@@ -9,34 +9,49 @@ asyncio.create_subprocess_exec, so no shell interpolation is possible.
 import re
 from typing import Any
 
-# Block device paths: /dev/sdX, /dev/nvme0n1, /dev/vda, etc.
-_DEV_PATH_RE = re.compile(r"^/dev/[a-z]{2,8}[0-9]{0,3}(p[0-9]{1,3})?$")
+# Block device paths: traditional (sda/vda/xvda) and NVMe (nvme0n1/nvme0n1p1)
+_DEV_PATH_RE = re.compile(
+    r"^/dev/(?:"
+    r"[a-z]{2,8}[0-9]{0,3}(?:p[0-9]{1,3})?"   # sda, vda, xvda, sda1, etc.
+    r"|nvme[0-9]{1,4}n[0-9]{1,4}(?:p[0-9]{1,3})?"  # nvme0n1, nvme0n1p1
+    r"|mmcblk[0-9]{1,4}(?:p[0-9]{1,3})?"           # mmcblk0p1
+    r")$"
+)
 
 # /dev/mdX device paths
 _MD_PATH_RE = re.compile(r"^/dev/md[0-9]{1,4}$")
 
-# LVM volume group names
-_VG_NAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_.+-]{0,126}$")
+# LVM volume group names — must start with a letter or underscore
+_VG_NAME_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_.+-]{0,126}$")
 
 # UUID job IDs
 _JOB_ID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 
 # Remote path for backup: NFS host:/path or CIFS //host/share
-_REMOTE_PATH_RE = re.compile(r"^[a-zA-Z0-9._-]{1,253}[:/].{1,255}$")
+_REMOTE_PATH_RE = re.compile(r"^(?://|[a-zA-Z0-9._-]{1,253}[:/]).{1,255}$")
 
 # CIFS credential: no newlines or shell metacharacters
 _CRED_RE = re.compile(r"^[^\n\r;&|`$<>]{0,256}$")
+
+# Dangerous pseudo-devices that must never be used as targets
+_BLOCKED_DEV_PATHS = frozenset({
+    "/dev/null", "/dev/zero", "/dev/full", "/dev/random", "/dev/urandom",
+})
 
 
 class ValidationError(Exception):
     pass
 
 
-def _validate_dev_path(value: Any, field: str) -> str:
+def _validate_dev_path(value: Any, field: str, *, allow_md: bool = False) -> str:
     if not isinstance(value, str):
         raise ValidationError(f"{field}: expected string, got {type(value).__name__}")
     if not _DEV_PATH_RE.match(value):
         raise ValidationError(f"{field}: invalid device path {value!r}")
+    if value in _BLOCKED_DEV_PATHS:
+        raise ValidationError(f"{field}: device not allowed {value!r}")
+    if not allow_md and _MD_PATH_RE.match(value):
+        raise ValidationError(f"{field}: md virtual devices not allowed here {value!r}")
     return value
 
 

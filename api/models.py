@@ -4,10 +4,27 @@ import re
 from typing import Literal
 from pydantic import BaseModel, field_validator
 
-_VG_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_.+-]{0,126}$")
-_DEV_RE = re.compile(r"^/dev/[a-z]{2,8}[0-9]{0,3}(p[0-9]{1,3})?$")
+# VG names must start with a letter or underscore
+_VG_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_.+-]{0,126}$")
+
+# Block device paths: traditional (sda/vda/xvda) and NVMe (nvme0n1/nvme0n1p1)
+_DEV_RE = re.compile(
+    r"^/dev/(?:"
+    r"[a-z]{2,8}[0-9]{0,3}(?:p[0-9]{1,3})?"   # sda, vda, xvda, sda1, etc.
+    r"|nvme[0-9]{1,4}n[0-9]{1,4}(?:p[0-9]{1,3})?"  # nvme0n1, nvme0n1p1
+    r"|mmcblk[0-9]{1,4}(?:p[0-9]{1,3})?"           # mmcblk0p1
+    r")$"
+)
+# Dangerous pseudo-devices that must never be erased/scanned
+_BLOCKED_DEVS = frozenset({
+    "/dev/null", "/dev/zero", "/dev/full", "/dev/random", "/dev/urandom",
+})
+# MD virtual devices (rejected wherever only physical disks are expected)
+_MD_DEV_RE = re.compile(r"^/dev/md[0-9]+$")
+
 _CRED_RE = re.compile(r"^[^\n\r;&|`$<>]{0,256}$")
-_RPATH_RE = re.compile(r"^[a-zA-Z0-9._-]{1,253}[:/].{1,255}$")
+# NFS: host:/path  or  CIFS: //host/share
+_RPATH_RE = re.compile(r"^(?://|[a-zA-Z0-9._-]{1,253}[:/]).{1,255}$")
 
 
 class DiskInfo(BaseModel):
@@ -51,6 +68,15 @@ class VolumeRenameRequest(BaseModel):
         return v
 
 
+def _check_dev_path(v: str) -> str:
+    """Shared device path validator: must match _DEV_RE and not be a blocked pseudo-device."""
+    if not _DEV_RE.match(v):
+        raise ValueError("invalid device path")
+    if v in _BLOCKED_DEVS:
+        raise ValueError("device not allowed")
+    return v
+
+
 class MigrateRequest(BaseModel):
     direction: Literal["traid1_to_traid2", "traid2_to_traid1"]
     new_disk: str | None = None
@@ -58,8 +84,8 @@ class MigrateRequest(BaseModel):
     @field_validator("new_disk")
     @classmethod
     def new_disk_valid(cls, v):
-        if v is not None and not _DEV_RE.match(v):
-            raise ValueError("invalid device path")
+        if v is not None:
+            _check_dev_path(v)
         return v
 
 
@@ -70,9 +96,7 @@ class ReplaceRequest(BaseModel):
     @field_validator("old_disk", "new_disk")
     @classmethod
     def disk_valid(cls, v):
-        if not _DEV_RE.match(v):
-            raise ValueError("invalid device path")
-        return v
+        return _check_dev_path(v)
 
 
 class GrowRequest(BaseModel):
@@ -81,9 +105,7 @@ class GrowRequest(BaseModel):
     @field_validator("new_disk")
     @classmethod
     def disk_valid(cls, v):
-        if not _DEV_RE.match(v):
-            raise ValueError("invalid device path")
-        return v
+        return _check_dev_path(v)
 
 
 class ShrinkRequest(BaseModel):
@@ -92,8 +114,9 @@ class ShrinkRequest(BaseModel):
     @field_validator("disk_to_remove")
     @classmethod
     def disk_valid(cls, v):
-        if not _DEV_RE.match(v):
-            raise ValueError("invalid device path")
+        _check_dev_path(v)
+        if _MD_DEV_RE.match(v):
+            raise ValueError("md virtual devices cannot be removed; specify a physical disk")
         return v
 
 
@@ -103,9 +126,7 @@ class CloneRequest(BaseModel):
     @field_validator("target_disk")
     @classmethod
     def disk_valid(cls, v):
-        if not _DEV_RE.match(v):
-            raise ValueError("invalid device path")
-        return v
+        return _check_dev_path(v)
 
 
 class BackupRequest(BaseModel):
@@ -137,9 +158,7 @@ class SmartTestRequest(BaseModel):
     @field_validator("disk")
     @classmethod
     def disk_valid(cls, v):
-        if not _DEV_RE.match(v):
-            raise ValueError("invalid device path")
-        return v
+        return _check_dev_path(v)
 
 
 class BadblocksRequest(BaseModel):
@@ -148,9 +167,7 @@ class BadblocksRequest(BaseModel):
     @field_validator("disk")
     @classmethod
     def disk_valid(cls, v):
-        if not _DEV_RE.match(v):
-            raise ValueError("invalid device path")
-        return v
+        return _check_dev_path(v)
 
 
 class EraseRequest(BaseModel):
@@ -160,9 +177,7 @@ class EraseRequest(BaseModel):
     @field_validator("disk")
     @classmethod
     def disk_valid(cls, v):
-        if not _DEV_RE.match(v):
-            raise ValueError("invalid device path")
-        return v
+        return _check_dev_path(v)
 
 
 class RaidGroupPreview(BaseModel):

@@ -224,7 +224,7 @@ async def create_array(request: ArrayCreationRequest):
 
 @app.post("/api/volumes/{vg_name}/migrate", response_model=JobAccepted, status_code=202)
 async def migrate_volume(vg_name: str, request: MigrateRequest):
-    if not re.match(r"^[a-zA-Z0-9][a-zA-Z0-9_.+-]{0,126}$", vg_name):
+    if not re.match(r"^[a-zA-Z_][a-zA-Z0-9_.+-]{0,126}$", vg_name):
         raise HTTPException(status_code=400, detail="invalid volume group name")
     params = {"vg_name": vg_name, "direction": request.direction}
     if request.new_disk:
@@ -240,7 +240,7 @@ async def migrate_volume(vg_name: str, request: MigrateRequest):
 
 @app.post("/api/volumes/{vg_name}/replace", response_model=JobAccepted, status_code=202)
 async def replace_disk(vg_name: str, request: ReplaceRequest):
-    if not re.match(r"^[a-zA-Z0-9][a-zA-Z0-9_.+-]{0,126}$", vg_name):
+    if not re.match(r"^[a-zA-Z_][a-zA-Z0-9_.+-]{0,126}$", vg_name):
         raise HTTPException(status_code=400, detail="invalid volume group name")
     try:
         data = await uds_client.send_request(
@@ -256,7 +256,7 @@ async def replace_disk(vg_name: str, request: ReplaceRequest):
 
 @app.post("/api/volumes/{vg_name}/grow", response_model=JobAccepted, status_code=202)
 async def grow_array(vg_name: str, request: GrowRequest):
-    if not re.match(r"^[a-zA-Z0-9][a-zA-Z0-9_.+-]{0,126}$", vg_name):
+    if not re.match(r"^[a-zA-Z_][a-zA-Z0-9_.+-]{0,126}$", vg_name):
         raise HTTPException(status_code=400, detail="invalid volume group name")
     try:
         data = await uds_client.send_request(
@@ -271,7 +271,7 @@ async def grow_array(vg_name: str, request: GrowRequest):
 
 @app.post("/api/volumes/{vg_name}/shrink", response_model=JobAccepted, status_code=202)
 async def shrink_array(vg_name: str, request: ShrinkRequest):
-    if not re.match(r"^[a-zA-Z0-9][a-zA-Z0-9_.+-]{0,126}$", vg_name):
+    if not re.match(r"^[a-zA-Z_][a-zA-Z0-9_.+-]{0,126}$", vg_name):
         raise HTTPException(status_code=400, detail="invalid volume group name")
     try:
         data = await uds_client.send_request(
@@ -287,7 +287,7 @@ async def shrink_array(vg_name: str, request: ShrinkRequest):
 
 @app.post("/api/volumes/{vg_name}/clone", response_model=JobAccepted, status_code=202)
 async def clone_volume(vg_name: str, request: CloneRequest):
-    if not re.match(r"^[a-zA-Z0-9][a-zA-Z0-9_.+-]{0,126}$", vg_name):
+    if not re.match(r"^[a-zA-Z_][a-zA-Z0-9_.+-]{0,126}$", vg_name):
         raise HTTPException(status_code=400, detail="invalid volume group name")
     try:
         data = await uds_client.send_request(
@@ -302,7 +302,7 @@ async def clone_volume(vg_name: str, request: CloneRequest):
 
 @app.post("/api/volumes/{vg_name}/backup", response_model=JobAccepted, status_code=202)
 async def backup_volume(vg_name: str, request: BackupRequest):
-    if not re.match(r"^[a-zA-Z0-9][a-zA-Z0-9_.+-]{0,126}$", vg_name):
+    if not re.match(r"^[a-zA-Z_][a-zA-Z0-9_.+-]{0,126}$", vg_name):
         raise HTTPException(status_code=400, detail="invalid volume group name")
     try:
         data = await uds_client.send_request("volume_backup", {
@@ -322,7 +322,7 @@ async def backup_volume(vg_name: str, request: BackupRequest):
 
 @app.patch("/api/volumes/{vg_name}", status_code=200)
 async def rename_volume(vg_name: str, request: VolumeRenameRequest):
-    if not re.match(r"^[a-zA-Z0-9][a-zA-Z0-9_.+-]{0,126}$", vg_name):
+    if not re.match(r"^[a-zA-Z_][a-zA-Z0-9_.+-]{0,126}$", vg_name):
         raise HTTPException(status_code=400, detail="invalid volume group name")
     try:
         return await uds_client.send_request(
@@ -336,7 +336,7 @@ async def rename_volume(vg_name: str, request: VolumeRenameRequest):
 
 @app.delete("/api/volumes/{vg_name}", status_code=202)
 async def delete_volume(vg_name: str):
-    if not re.match(r"^[a-zA-Z0-9][a-zA-Z0-9_.+-]{0,126}$", vg_name):
+    if not re.match(r"^[a-zA-Z_][a-zA-Z0-9_.+-]{0,126}$", vg_name):
         raise HTTPException(status_code=400, detail="invalid volume group name")
     try:
         data = await uds_client.send_request("array_delete", {"vg_name": vg_name})
