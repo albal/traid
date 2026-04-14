@@ -101,7 +101,8 @@ async def _send(action: str, params: dict = {}) -> dict:
 
 @router.get("/nfs")
 async def list_nfs_exports():
-    return await _send("nfs_list_exports")
+    data = await _send("nfs_list_exports")
+    return data.get("exports", []) if isinstance(data, dict) else data
 
 
 @router.post("/nfs", status_code=201)
@@ -122,7 +123,8 @@ async def remove_nfs_export(request: NfsRemoveRequest):
 
 @router.get("/smb")
 async def list_smb_shares():
-    return await _send("samba_list_shares")
+    data = await _send("samba_list_shares")
+    return data.get("shares", []) if isinstance(data, dict) else data
 
 
 @router.post("/smb", status_code=201)

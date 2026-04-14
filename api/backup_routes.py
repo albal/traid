@@ -68,7 +68,8 @@ def _check_backup_id(backup_id: str) -> None:
 
 @router.get("/jobs")
 async def list_backup_jobs():
-    return await _send("backup_list_jobs")
+    data = await _send("backup_list_jobs")
+    return data.get("jobs", []) if isinstance(data, dict) else data
 
 
 @router.post("/jobs", status_code=201)
@@ -101,4 +102,5 @@ async def run_backup_now(backup_id: str):
 @router.get("/jobs/{backup_id}/history")
 async def backup_job_history(backup_id: str):
     _check_backup_id(backup_id)
-    return await _send("backup_job_history", {"backup_id": backup_id})
+    data = await _send("backup_job_history", {"backup_id": backup_id})
+    return data.get("history", []) if isinstance(data, dict) else data

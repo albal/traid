@@ -79,12 +79,14 @@ async def _send(action: str, params: dict = {}) -> dict:
 
 @router.get("")
 async def list_vms():
-    return await _send("vm_list")
+    data = await _send("vm_list")
+    return data.get("vms", []) if isinstance(data, dict) else data
 
 
 @router.get("/isos")
 async def list_isos():
-    return await _send("vm_list_isos")
+    data = await _send("vm_list_isos")
+    return data.get("isos", []) if isinstance(data, dict) else data
 
 
 @router.post("/isos/upload", status_code=201)

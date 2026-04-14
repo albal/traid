@@ -92,7 +92,8 @@ async def _send(action: str, params: dict = {}) -> dict:
 
 @router.get("/api/containers")
 async def list_containers(all: bool = True):
-    return await _send("docker_list_containers", {"all": all})
+    data = await _send("docker_list_containers", {"all": all})
+    return data.get("containers", []) if isinstance(data, dict) else data
 
 
 @router.post("/api/containers", status_code=201)
@@ -130,7 +131,8 @@ async def container_logs(container_id: str, lines: int = 200):
 
 @router.get("/api/images")
 async def list_images():
-    return await _send("docker_list_images")
+    data = await _send("docker_list_images")
+    return data.get("images", []) if isinstance(data, dict) else data
 
 
 @router.post("/api/images/pull", status_code=202, response_model=JobAccepted)
